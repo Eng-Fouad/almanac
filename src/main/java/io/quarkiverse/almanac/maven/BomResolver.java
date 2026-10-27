@@ -657,7 +657,8 @@ public final class BomResolver {
                 && !version.equals(".") && !version.equals("..");
     }
 
-    /// The pom `groupId:artifactId:version`, read once.
+    /// The pom `groupId:artifactId:version`, read once. Whatever the fetch throws, also an [Error], reaches the threads
+    /// that wait for it, so that none waits forever.
     private Optional<Pom> fetch(String groupId, String artifactId, String version) throws IOException {
         String id = groupId + ":" + artifactId + ":" + version;
         CompletableFuture<Optional<Pom>> mine = new CompletableFuture<>();
@@ -670,7 +671,7 @@ public final class BomResolver {
             Optional<Pom> pom = content.isEmpty() ? Optional.empty() : Optional.of(parse(content.get(), id));
             mine.complete(pom);
             return pom;
-        } catch (IOException | RuntimeException e) {
+        } catch (IOException | RuntimeException | Error e) {
             fetched.remove(id, mine);
             mine.completeExceptionally(e);
             throw e;

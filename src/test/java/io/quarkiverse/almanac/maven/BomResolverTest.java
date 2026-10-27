@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -986,6 +987,49 @@ class BomResolverTest {
             }
         }
         assertEquals(1, reads.get());
+    }
+
+    @Test
+    void aThreadWaitingForAPomWhoseFetchThrowsAnErrorFailsInsteadOfWaitingForever() throws Exception {
+        StackOverflowError error = new StackOverflowError("deep pom");
+        CountDownLatch fetching = new CountDownLatch(1);
+        CountDownLatch fail = new CountDownLatch(1);
+        BomResolver resolver = new BomResolver((groupId, artifactId, version) -> {
+            fetching.countDown();
+            try {
+                fail.await();
+            } catch (InterruptedException e) {
+                throw new InterruptedIOException("interrupted");
+            }
+            throw error;
+        });
+        byte[] first = project("g:bom-a:1", parent("g:parent:1")).getBytes(StandardCharsets.UTF_8);
+        byte[] second = project("g:bom-b:1", parent("g:parent:1")).getBytes(StandardCharsets.UTF_8);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<BomResolver.Result> fetches = executor.submit(() -> resolver.resolve(first, "1"));
+            fetching.await();
+            AtomicReference<Thread> waiter = new AtomicReference<>();
+            Future<BomResolver.Result> waits = executor.submit(() -> {
+                waiter.set(Thread.currentThread());
+                return resolver.resolve(second, "1");
+            });
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            while (waiter.get() == null || waiter.get().getState() != Thread.State.WAITING) {
+                assertTrue(System.nanoTime() < deadline, "the second resolution never waited for the fetch");
+                Thread.sleep(5);
+            }
+            fail.countDown();
+
+            assertSame(error, assertThrows(ExecutionException.class, fetches::get).getCause());
+            Throwable waited = assertThrows(ExecutionException.class, () -> waits.get(10, TimeUnit.SECONDS),
+                    "the waiting resolution ends").getCause();
+            assertTrue(waited instanceof IOException, waited.toString());
+            assertSame(error, waited.getCause());
+        } finally {
+            fail.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test
