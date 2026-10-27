@@ -245,8 +245,8 @@ class BomSnapshotsTest {
             assertEquals("""
                     warning: bom 2.4.1.Final: 1 managed dependency keeps unresolved references: ${tcnative.version} \
                     (declared in io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative; neither the poms that \
-                    declare them nor their parents define these properties (profiles that depend on the machine are \
-                    not applied); they are kept as written, as Maven keeps them
+                    declare them nor their parents define these properties; they are kept as written, as Maven keeps \
+                    them
                     bom 2.4.1.Final: 2 managed dependencies (0 io.quarkus), released 2021-11-03
                     """, first);
 
@@ -320,9 +320,8 @@ class BomSnapshotsTest {
                     + "${tcnative.version} (declared in io.netty:netty-bom:4.1.68.Final, imported through "
                     + "io.netty:netty-bom:4.1.68.Final): io.netty:netty-tcnative, "
                     + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
-                    + "neither the poms that declare them nor their parents define these properties (profiles that "
-                    + "depend on the machine are not applied); they are kept as written, as Maven keeps them"),
-                    warnings);
+                    + "neither the poms that declare them nor their parents define these properties; they are kept as "
+                    + "written, as Maven keeps them"), warnings);
             assertTrue(log.contains("bom 0.11.0: resolved from 2 poms (parents: ; imported BOMs: 1; entries "
                     + "imported: 6)"), log);
         }
@@ -360,6 +359,44 @@ class BomSnapshotsTest {
 
                 String log = log(() -> assertThrows(IOException.class,
                         () -> boms(cache, store, offline).load("1.0.0.Final", false), bom.getKey()));
+
+                assertFalse(store.exists("1.0.0.Final", SnapshotStore.BOM), bom.getKey());
+                assertFalse(log.contains("kept as written"), log);
+            }
+        }
+    }
+
+    /// A reference that Maven may resolve where the resolution does not look is not kept: the release fails.
+    @Test
+    void aReferenceThatMavenMayResolveFromTheModelOrTheMachineFailsTheRelease() throws Exception {
+        Map<String, String> boms = Map.of(
+                "a model element", """
+                        <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><name>Quarkus - BOM</name><dependencyManagement><dependencies>
+                          <dependency><groupId>org.acme</groupId><artifactId>named</artifactId>
+                          <version>${project.name}</version></dependency></dependencies></dependencyManagement>
+                        </project>""",
+                "a property of the machine", managedBom("""
+                        <dependency><groupId>org.acme</groupId><artifactId>jdk</artifactId>
+                          <version>${java.version}</version></dependency>"""),
+                "a property that only a JDK profile sets", """
+                        <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><dependencyManagement><dependencies>
+                          <dependency><groupId>org.acme</groupId><artifactId>lib</artifactId>
+                          <version>${lib.version}</version></dependency></dependencies></dependencyManagement>
+                          <profiles><profile><id>jdk11</id><activation><jdk>[11,)</jdk></activation>
+                          <properties><lib.version>2.0</lib.version></properties></profile></profiles></project>""");
+        try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
+            for (Map.Entry<String, String> bom : boms.entrySet()) {
+                Path cache = dir.resolve("cache-" + bom.getKey().replace(' ', '-'));
+                cache(cache, "io.quarkus:quarkus-bom:1.0.0.Final", bom.getValue());
+                SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
+
+                String log = log(() -> {
+                    IOException e = assertThrows(IOException.class,
+                            () -> boms(cache, store, offline).load("1.0.0.Final", false), bom.getKey());
+                    assertTrue(e.getMessage().startsWith("the managed dependency org.acme:"), e.getMessage());
+                });
 
                 assertFalse(store.exists("1.0.0.Final", SnapshotStore.BOM), bom.getKey());
                 assertFalse(log.contains("kept as written"), log);

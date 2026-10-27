@@ -20,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.MatchResult;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /// Computes the effective dependency management of a BOM the way Maven 3 builds the model of a pom it reads from a
@@ -51,6 +52,9 @@ import java.util.regex.Pattern;
 /// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
 /// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
 /// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
+/// The resolution fails instead where Maven may give such a reference a value that it does not know ([Elsewhere]),
+/// and where a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not
+/// tell from the placeholder.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -58,6 +62,8 @@ public final class BomResolver {
 
     /// A `${...}` reference, also one that is never closed (Maven keeps both as written).
     private static final Pattern REFERENCE = Pattern.compile("\\$\\{[^}]*}?");
+    /// A closed `${...}` reference as interpolation reads it, up to the first `}`; the group is its expression.
+    private static final Pattern EXPRESSION = Pattern.compile("\\$\\{([^}]*)}");
     /// Maven's characters of a groupId or artifactId.
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9_.-]+");
     /// A version without the characters Maven forbids in one (path separators and other reserved characters).
@@ -131,8 +137,7 @@ public final class BomResolver {
             List<String> causes = new ArrayList<>();
             idsByCause.forEach((cause, ids) -> causes.add(cause + ": " + examples(ids)));
             return Optional.of(String.format(Locale.ROOT, "%s unresolved references: %s; neither the poms that "
-                            + "declare them nor their parents define these properties (profiles that depend on the "
-                            + "machine are not applied)",
+                            + "declare them nor their parents define these properties",
                     unresolved.size() == 1 ? "1 managed dependency keeps" : unresolved.size()
                             + " managed dependencies keep", String.join("; ", causes)));
         }
@@ -149,8 +154,10 @@ public final class BomResolver {
     ///
     /// @param origin the pom that declares it
     /// @param via    the import of the model being built that brought it in, null for the model's own entries
+    /// @param doubt  once interpolated, why Maven may give a reference that it keeps a value that the resolution does
+    ///               not know (`keeps ${x}, which ...`); null when Maven keeps every one of them as written
     private record Managed(String groupId, String artifactId, String version, String type, String classifier,
-                           String scope, String origin, String via) {
+                           String scope, String origin, String via, String doubt) {
 
         /// Maven's management key, `groupId:artifactId:type:classifier` (type `jar` when absent).
         String key() {
@@ -167,9 +174,34 @@ public final class BomResolver {
         }
 
         Managed via(String importId) {
-            return new Managed(groupId, artifactId, version, type, classifier, scope, origin, importId);
+            return new Managed(groupId, artifactId, version, type, classifier, scope, origin, importId, doubt);
+        }
+
+        Managed doubting(String why) {
+            return new Managed(groupId, artifactId, version, type, classifier, scope, origin, via, why);
         }
     }
+
+    /// Where Maven may find a value for a reference that no property of the model defines, which the resolution does
+    /// not know: Maven keeps such a reference as written only on some machines, or not at all.
+    private enum Elsewhere {
+        /// An element of the model other than the coordinates, the packaging and the parent's coordinates, such as
+        /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets).
+        MODEL,
+        /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`.
+        MACHINE,
+        /// A property that a profile depending on the machine sets.
+        PROFILE
+    }
+
+    /// The text elements of Maven's model that the resolution does not read, which a reference reads as a whole.
+    private static final Set<String> MODEL_TEXT = Set.of("childProjectUrlInheritAppendPath", "description", "id",
+            "inceptionYear", "modelEncoding", "modelVersion", "name", "url");
+    /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`.
+    private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "contributors", "dependencies",
+            "dependencyManagement", "developers", "distributionManagement", "issueManagement", "licenses",
+            "mailingLists", "modules", "organization", "pluginRepositories", "pomFile", "prerequisites", "profiles",
+            "projectDirectory", "properties", "reporting", "reports", "repositories", "scm");
 
     /// What the resolution needs of a pom's effective model.
     ///
@@ -204,18 +236,30 @@ public final class BomResolver {
     /// @param pom        the BOM pom
     /// @param bomVersion the release version, for the classifier placeholder of [BomParser#id]
     /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, on a parent,
-    ///                     import or property reference cycle, or when a managed dependency has no valid groupId and
-    ///                     artifactId
+    ///                     import or property reference cycle, when a managed dependency has no valid groupId and
+    ///                     artifactId, when one keeps a reference that Maven may resolve where the resolution does not
+    ///                     look ([Elsewhere]), or when its type or classifier keeps the text of the placeholder
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
         Set<String> warnings = new LinkedHashSet<>(model.warnings());
         Map<String, Entry> byId = new TreeMap<>();
+        List<String> doubts = new ArrayList<>();
         for (Managed managed : model.managed()) {
             // Maven keeps it as well (it may manage a scope or exclusions), but there is no version to list
             if (managed.version() == null) {
                 warnings.add(String.format(Locale.ROOT, "skipping incomplete managed dependency %s:%s (declared in %s)",
                         managed.groupId(), managed.artifactId(), managed.origin()));
                 continue;
+            }
+            String declared = " (declared in " + managed.origin()
+                    + (managed.via() == null ? "" : ", imported through " + managed.via()) + ")";
+            for (String value : new String[] {managed.type(), managed.classifier()}) {
+                if (value != null && value.contains(BomParser.QUARKUS_VERSION_PLACEHOLDER)) {
+                    throw new IOException("the managed dependency " + managed.groupId() + ":" + managed.artifactId()
+                            + declared + " keeps " + value + " in its type or classifier, which an id could not tell "
+                            + "from the placeholder " + BomParser.QUARKUS_VERSION_PLACEHOLDER + " of a classifier "
+                            + "equal to the release version");
+                }
             }
             String id = BomParser.id(managed.groupId(), managed.artifactId(), managed.type(), managed.classifier(),
                     bomVersion);
@@ -228,10 +272,18 @@ public final class BomResolver {
             }
             Entry entry = new Entry(id, managed.version(), managed.origin(), managed.via(), List.copyOf(references));
             Entry previous = byId.putIfAbsent(id, entry);
+            if (previous == null && managed.doubt() != null) {
+                doubts.add("the managed dependency " + id + declared + " " + managed.doubt());
+            }
             if (previous != null && !previous.version().equals(entry.version())) {
                 warnings.add(String.format(Locale.ROOT, "%s managed twice (%s, %s); keeping the first", id,
                         previous.version(), entry.version()));
             }
+        }
+        if (!doubts.isEmpty()) {
+            throw new IOException(doubts.getFirst() + (doubts.size() == 1 ? "" : "; " + (doubts.size() - 1)
+                    + " more managed " + (doubts.size() == 2 ? "dependency keeps" : "dependencies keep")
+                    + " such a reference"));
         }
         return new Result(model.coordinates(), List.copyOf(byId.values()), model.parents(), model.imports(),
                 model.poms().size(), model.profiles(), List.copyOf(warnings));
@@ -271,6 +323,17 @@ public final class BomResolver {
 
         List<String> origins = new ArrayList<>(List.of(coordinates));
         origins.addAll(parents);
+        // what the profiles that only some machines activate set: Maven's value is not known here
+        Map<String, String> machineProfiles = new HashMap<>();
+        for (int i = 0; i < lineage.size(); i++) {
+            for (Pom.Profile profile : lineage.get(i).profiles()) {
+                if (!active.get(i).contains(profile)
+                        && activated(profile.activation()) == Activated.DEPENDS_ON_THE_MACHINE) {
+                    String which = describe(profile, origins.get(i));
+                    profile.properties().keySet().forEach(property -> machineProfiles.putIfAbsent(property, which));
+                }
+            }
+        }
         List<List<Managed>> declared = new ArrayList<>();
         for (int i = 0; i < lineage.size(); i++) {
             List<Managed> own = managed(lineage.get(i).managed(), origins.get(i));
@@ -284,9 +347,10 @@ public final class BomResolver {
             Managed entry = new Managed(interpolator.apply(raw.groupId()), interpolator.apply(raw.artifactId()),
                     interpolator.apply(raw.version()), blankToNull(interpolator.apply(raw.type())),
                     blankToNull(interpolator.apply(raw.classifier())), interpolator.apply(raw.scope()),
-                    raw.origin(), null);
+                    raw.origin(), null, null);
             if (!entry.isImport()) {
                 requireValidIds(entry);
+                entry = entry.doubting(doubt(entry, coordinates, pom.parent() != null, machineProfiles));
             }
             managed.add(entry);
         }
@@ -306,8 +370,7 @@ public final class BomResolver {
                 if (activated(profile.activation()) != Activated.DEPENDS_ON_THE_MACHINE) {
                     continue;
                 }
-                String which = "profile " + profile.id() + " of " + origins.get(i) + " ("
-                        + conditions(profile.activation()) + ")";
+                String which = describe(profile, origins.get(i));
                 if (!profile.managed().isEmpty()) {
                     warnings.add(String.format(Locale.ROOT, "profiles that depend on the machine are not applied: "
                             + "%s manages %d %s", which, profile.managed().size(),
@@ -380,9 +443,59 @@ public final class BomResolver {
         List<Managed> managed = new ArrayList<>();
         for (Pom.Dependency d : dependencies) {
             managed.add(new Managed(d.groupId(), d.artifactId(), d.version(), d.type(), d.classifier(), d.scope(),
-                    origin, null));
+                    origin, null, null));
         }
         return managed;
+    }
+
+    /// Why Maven may give a reference that the version, type or classifier of an interpolated entry keeps a value that
+    /// the resolution does not know ([Managed#doubt()]); null when Maven keeps every one of them as written.
+    ///
+    /// @param coordinates     the model that interpolated the entry
+    /// @param parent          whether that model has a parent
+    /// @param machineProfiles the properties that the profiles of its lineage depending on the machine set, each with
+    ///                        the first such profile
+    private static String doubt(Managed entry, String coordinates, boolean parent,
+            Map<String, String> machineProfiles) {
+        for (String value : new String[] {entry.version(), entry.type(), entry.classifier()}) {
+            Matcher matcher = EXPRESSION.matcher(Objects.toString(value, ""));
+            while (matcher.find()) {
+                String expression = matcher.group(1);
+                String name = expression.startsWith(".") ? expression.substring(1) : expression;
+                Elsewhere where = elsewhere(name, parent, machineProfiles.keySet());
+                if (where != null) {
+                    return "keeps ${" + expression + "}, " + switch (where) {
+                        case MODEL -> "which Maven reads from the model of " + coordinates + ", beyond the "
+                                + "coordinates, packaging, parent and properties that the resolution reads";
+                        case MACHINE -> "which Maven takes from the machine that builds: a property of the JVM, of "
+                                + "the environment or of Maven itself";
+                        case PROFILE -> "which the " + machineProfiles.get(name) + " sets on the machines that "
+                                + "activate it, a profile that the resolution does not apply";
+                    };
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Where Maven may find a value for the reference `${name}` that no property defines, a value that the resolution
+    /// does not know; null when Maven keeps such a reference as written in every plain build. Maven reads the model
+    /// along the reference's path, with or without the `project.` or `pom.` prefix (a text element only as a whole:
+    /// `${version.jdk-misc}` reads nothing), and an unprefixed reference also among the properties of the machine.
+    ///
+    /// @param parent     whether the model has a parent
+    /// @param machineSet the properties that profiles depending on the machine set
+    private static Elsewhere elsewhere(String name, boolean parent, Set<String> machineSet) {
+        String path = Interpolator.unprefixed(name);
+        String element = path.split("[.\\[(]", 2)[0];
+        if (MODEL_PARTS.contains(element) || element.equals(path) && MODEL_TEXT.contains(element)
+                || element.equals("parent") && parent) {
+            return Elsewhere.MODEL;
+        }
+        if (path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith)) {
+            return Elsewhere.MACHINE;
+        }
+        return machineSet.contains(name) ? Elsewhere.PROFILE : null;
     }
 
     /// The profiles of a pom that a plain Maven build activates on every machine, in declaration order: those whose
@@ -427,6 +540,11 @@ public final class BomResolver {
             }
         }
         return machine ? Activated.DEPENDS_ON_THE_MACHINE : Activated.NO;
+    }
+
+    /// `profile <id> of <pom> (<conditions>)`, for a profile that depends on the machine.
+    private static String describe(Pom.Profile profile, String origin) {
+        return "profile " + profile.id() + " of " + origin + " (" + conditions(profile.activation()) + ")";
     }
 
     private static String conditions(Pom.Activation activation) {

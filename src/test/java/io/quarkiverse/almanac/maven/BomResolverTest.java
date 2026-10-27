@@ -422,8 +422,90 @@ class BomResolverTest {
                 + "io.quarkus:quarkus-bom:2.4.1.Final): org.acme:art:${art.type}; ${tcnative.version} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, "
                 + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
-                + "neither the poms that declare them nor their parents define these properties (profiles that depend "
-                + "on the machine are not applied)"), result.describeUnresolved());
+                + "neither the poms that declare them nor their parents define these properties"),
+                result.describeUnresolved());
+    }
+
+    @Test
+    void keepsAsWrittenTheReferencesThatMavenKeepsOnEveryMachine() throws IOException {
+        // Maven reads a text element of the model only as a whole, and a project or parent element that is not there
+        // gives nothing; without project directory it knows no basedir either
+        Repo repo = new Repo().add("org.imp:i:1", project("org.imp:i:1",
+                managed(dep("g:a:${java.version}"), dep("g:b:2"))));
+        String bom = project("io.quarkus:quarkus-bom:1",
+                "<name>The BOM</name>",
+                managed(dep("org.jboss:jdk-misc:${version.jdk-misc}"), dep("g:name-x:${name.x}"),
+                        dep("g:version-jdk:${project.version.jdk}"),
+                        dep("org.apache.maven.shared:maven-artifact-transfer:${maven-artifact-transfer.version}"),
+                        dep("org.glassfish.web:el-impl:${el-impl.version}"), dep("g:basedir:${project.basedir}"),
+                        dep("g:basedir2:${basedir}"), dep("g:foo:${project.foo}"), dep("g:parent:${parent.version}"),
+                        dep("g:project-parent:${project.parent.version}"), dep("g:a:1.0"),
+                        bomImport("org.imp:i:1")),
+                "<profiles>" + profile("jdk11", "<jdk>[11,)</jdk>", properties("other.version=11")) + "</profiles>");
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals("${version.jdk-misc}", versions(result).get("org.jboss:jdk-misc"));
+        assertEquals("${parent.version}", versions(result).get("g:parent"));
+        assertEquals("1.0", versions(result).get("g:a"), "the importer manages it: the import's machine value is out");
+        assertEquals(10, result.unresolved().size());
+    }
+
+    @Test
+    void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() {
+        // Maven reads more of the model than the coordinates, the packaging and the parent, takes properties from the
+        // machine that builds, and applies the profiles that the machine activates
+        String jdkProfile = "<profiles>" + profile("jdk8+", "<jdk>[1.8,)</jdk>", properties("foo.version=1.0"))
+                + "</profiles>";
+        Repo repo = new Repo()
+                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:a:${foo.version}")), jdkProfile))
+                .add("g:parent:1", project("g:parent:1"));
+        String model = ", which Maven reads from the model of g:bom:1, beyond the coordinates, packaging, parent and "
+                + "properties that the resolution reads";
+        String machine = ", which Maven takes from the machine that builds: a property of the JVM, of the environment "
+                + "or of Maven itself";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", "<name>The BOM</name>", managed(dep("g:a:${project.name}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${project.name}" + model);
+        failures.put(project("g:bom:1", managed(dep("g:a:${name}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${name}" + model);
+        failures.put(project("g:bom:1", managed(dep("g:a:${project.build.finalName}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${project.build.finalName}" + model);
+        failures.put(project("g:bom:1", properties("n=${pom.description}"), managed(dep("g:a:x-${n}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${pom.description}" + model);
+        failures.put(project("g:bom:1", parent("g:parent:1"), managed(dep("g:a:${project.parent.relativePath}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${project.parent.relativePath}" + model);
+        failures.put(project("g:bom:1", managed(dep("g:a:${java.version}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${java.version}" + machine);
+        failures.put(project("g:bom:1", managed(dep("g:a:${env.HOME}"), dep("g:b::${user.home}:1"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${env.HOME}" + machine
+                        + "; 1 more managed dependency keeps such a reference");
+        failures.put(project("g:bom:1", managed(dep("g:a:${foo.version}")), jdkProfile),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${foo.version}, which the profile jdk8+ of "
+                        + "g:bom:1 (JDK [1.8,)) sets on the machines that activate it, a profile that the resolution "
+                        + "does not apply");
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "the managed dependency g:a (declared in org.imp:i:1, imported through org.imp:i:1) keeps "
+                        + "${foo.version}, which the profile jdk8+ of org.imp:i:1 (JDK [1.8,)) sets on the machines "
+                        + "that activate it, a profile that the resolution does not apply");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void failsOnATypeOrClassifierThatKeepsThePlaceholderText() throws IOException {
+        // an id writes ${quarkus.version} for a classifier equal to the release version
+        for (String entry : List.of("g:a::linux-${quarkus.version}:2", "g:a:${quarkus.version}::2")) {
+            IOException e = assertThrows(IOException.class,
+                    () -> resolve(BomResolver.PomSource.NONE, project("g:bom:1", managed(dep(entry)))), entry);
+            assertTrue(e.getMessage().startsWith("the managed dependency g:a (declared in g:bom:1) keeps "),
+                    e.getMessage());
+            assertTrue(e.getMessage().endsWith(" in its type or classifier, which an id could not tell from the "
+                    + "placeholder ${quarkus.version} of a classifier equal to the release version"), e.getMessage());
+        }
+        // a property that gives it the release version leaves the placeholder of the id only
+        assertEquals(Map.of("g:a:${quarkus.version}", "2"), versions(resolve(BomResolver.PomSource.NONE,
+                project("g:bom:1", properties("quarkus.version=1"), managed(dep("g:a::${quarkus.version}:2"))))));
     }
 
     @Test
