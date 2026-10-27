@@ -1352,7 +1352,8 @@ describe('extension snapshots without config: edge cases', () => {
   const events = (h, list) => h.events.map((e) => [list[e.vi].v, e.type, ...(e.kinds ?? [])]);
 
   test('the first release of the site has extensions only', () => {
-    const list = rows(['2.15.0.Final'], ['2.16.0.Final'], ['2.16.12.Final', 'e'], ['3.0.0.Final'], ['3.0.4.Final', 'ce']);
+    const list = rows(['2.15.0.Final'], ['2.16.0.Final'], ['2.16.12.Final', 'e'], ['3.0.0.Final'],
+      ['3.0.4.Final', 'ce']);
     assert.deepEqual(extensionVersionsOf(list), [2, 4]);
     assert.equal(extensionVersionFor(2, list), 2);
     assert.equal(configVersionFor(2, list), null, 'no config snapshot at or before it');
@@ -1388,12 +1389,13 @@ describe('extension snapshots without config: edge cases', () => {
     assert.equal(configVersionFor(2, list), null);
     assert.equal(extensionVersionFor(2, list), 2);
     assert.equal(extensionVersionFor(1, list), null, 'a pre-release never borrows');
-    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-a', extensionVersionsOf(list)), list), [['2.15.3.Final', 'present']]);
+    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-a', extensionVersionsOf(list)), list),
+      [['2.15.3.Final', 'present']]);
     const index = buildSearchIndex({ config: { versions: [], states: [], props: [] }, extensions, versions: list });
     assert.equal(index.entries.find((e) => e.id === 'quarkus-a').current, true);
   });
 
-  test('a final whose stream has only a pre-release extension snapshot uses it; config falls back across streams', () => {
+  test('a final whose stream has only a pre-release extension snapshot uses it; config uses an older stream', () => {
     const list = rows(['3.0.4.Final', 'ce'], ['3.1.0.CR1', 'e'], ['3.1.0'], ['3.1.1']);
     assert.equal(extensionVersionFor(2, list), 1);
     assert.equal(extensionVersionFor(3, list), 1);
@@ -1423,8 +1425,10 @@ describe('extension snapshots without config: edge cases', () => {
     };
     const hist = (id, vis) => extensionHistory(extensions, id, evs, { vis });
     // a change at the hidden pre-release shows at the next visible snapshot
-    assert.deepEqual(events(hist('quarkus-a', off), list), [['3.0.4.Final', 'present'], ['3.1.3', 'changed', 'status']]);
-    assert.deepEqual(events(hist('quarkus-a', on), list), [['3.0.4.Final', 'present'], ['3.1.0.CR1', 'changed', 'status']]);
+    assert.deepEqual(events(hist('quarkus-a', off), list),
+      [['3.0.4.Final', 'present'], ['3.1.3', 'changed', 'status']]);
+    assert.deepEqual(events(hist('quarkus-a', on), list),
+      [['3.0.4.Final', 'present'], ['3.1.0.CR1', 'changed', 'status']]);
     assert.equal(hist('quarkus-a', off).hiddenSnapshots, 1);
     // only in the hidden pre-release: every snapshot is used instead
     const b = hist('quarkus-b', off);
