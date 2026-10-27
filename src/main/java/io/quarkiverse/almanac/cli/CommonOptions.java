@@ -1,5 +1,6 @@
 package io.quarkiverse.almanac.cli;
 
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.MavenRepo;
 import io.quarkiverse.almanac.maven.Pacer;
 import io.quarkiverse.almanac.maven.VersionSelector;
@@ -32,7 +33,8 @@ public final class CommonOptions {
     @Option(names = "--pause", defaultValue = "2-5", paramLabel = "SECONDS", converter = PauseConverter.class,
             description = "Random pause between two requests to the repository, in seconds: a range such as 2-5, a "
                     + "fixed 3, or 0 for none. With a pause, requests go one at a time, also across commands that "
-                    + "share --work (default: ${DEFAULT-VALUE}).")
+                    + "share --work. Maven Central needs at least 1; shorter pauses and 0 are only for other "
+                    + "repositories (default: ${DEFAULT-VALUE}).")
     Pacer.Pause pause;
 
     @Option(names = "--offline", description = "Use cached files only; fail when something is not cached.")
@@ -52,6 +54,14 @@ public final class CommonOptions {
 
     @Option(names = "--verbose", description = "Log every HTTP request and other details.")
     boolean verbose;
+
+    /// The pacer of the commands on the cache folder `cacheDir`, for `--pause`.
+    ///
+    /// @throws IllegalArgumentException when `--pause` is too short for `--repo` ([Http#checkPause])
+    Pacer pacer(Path cacheDir) {
+        Http.checkPause(pause, repo);
+        return Pacer.forCache(pause, cacheDir);
+    }
 
     /// Reads `--pause`.
     public static final class PauseConverter implements ITypeConverter<Pacer.Pause> {

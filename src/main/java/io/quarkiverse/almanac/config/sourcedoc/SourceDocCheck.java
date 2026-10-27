@@ -81,8 +81,8 @@ public final class SourceDocCheck implements Callable<Integer> {
     int concurrency;
 
     @Option(names = "--pause", defaultValue = "2-5", paramLabel = "SECONDS",
-            description = "Random pause between two requests to the repository, in seconds: 2-5, 3, or 0 for none "
-                    + "(default: ${DEFAULT-VALUE}).")
+            description = "Random pause between two requests to the repository, in seconds: 2-5, 3, or 0 for none; "
+                    + "Maven Central needs at least 1 (default: ${DEFAULT-VALUE}).")
     String pause;
 
     @Option(names = "--offline", description = "Use cached files only; fail when something is not cached.")
@@ -115,8 +115,9 @@ public final class SourceDocCheck implements Callable<Integer> {
     public Integer call() throws IOException {
         Log.setVerbose(verbose);
         long start = System.nanoTime();
-        Pacer pacer = Pacer.forCache(Pacer.Pause.parse(pause), work.resolve("cache"));
-        try (Http http = new Http(concurrency, offline, pacer)) {
+        Pacer.Pause pacing = Pacer.Pause.parse(pause);
+        Http.checkPause(pacing, repository);
+        try (Http http = new Http(concurrency, offline, Pacer.forCache(pacing, work.resolve("cache")))) {
             MavenRepo repo = new MavenRepo(repository, work.resolve("cache"), http,
                     new RemoteJar.Options(RemoteJar.Options.DEFAULT_TAIL_SIZE, fullJarMax));
             SnapshotStore store = new SnapshotStore(work.resolve("snapshots"));
