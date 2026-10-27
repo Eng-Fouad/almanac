@@ -89,10 +89,9 @@ public final class BomSnapshots {
         Log.info("bom %s: %d managed dependencies (%d io.quarkus), released %s", version, snapshot.deps().size(),
                 quarkus, date);
         if (result.poms() > 1) {
-            Log.info("bom %s: resolved from %d poms: %d parents (%s), %d imported BOMs; %d entries imported", version,
-                    result.poms(), result.parents().size(), String.join(", ", result.parents()),
-                    result.imports().size(), result.imported());
-            Log.debug("bom %s: imported %s", version, String.join(", ", result.imports()));
+            Log.info("bom %s: resolved from %d poms (parents: %s; imported BOMs: %d; entries imported: %d)", version,
+                    result.poms(), String.join(", ", result.parents()), result.imports().size(), result.imported());
+            Log.debug("bom %s: imported BOMs: %s", version, String.join(", ", result.imports()));
         }
         return snapshot;
     }

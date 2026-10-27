@@ -152,10 +152,10 @@ public final class BomCommand implements Callable<Integer> {
                         + expected);
             }
         }
-        out.printf("%s: %d managed dependencies resolved from %s (%d poms: %d parents, %d imported BOMs; %d entries "
-                        + "imported), %d in the snapshot: %s%n", version, result.entries().size(), pomFile,
+        out.printf("%s: %d managed dependencies resolved from %s (poms read: %d, parents: %d, imported BOMs: %d, "
+                        + "entries imported: %d), %d in the snapshot: %s%n", version, result.entries().size(), pomFile,
                 result.poms(), result.parents().size(), result.imports().size(), result.imported(),
-                snapshot.deps().size(), differences.isEmpty() ? "equal" : differences.size() + " differences");
+                snapshot.deps().size(), differences.isEmpty() ? "equal" : "differences: " + differences.size());
         differences.forEach(line -> out.println("  " + line));
         for (BomResolver.Entry entry : result.unresolved()) {
             out.println("  unresolved in the pom: " + entry.id() + " " + entry.version() + describe(entry));

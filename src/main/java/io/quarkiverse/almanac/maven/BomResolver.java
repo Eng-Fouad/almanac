@@ -167,7 +167,7 @@ public final class BomResolver {
     }
 
     private final PomSource source;
-    private final Map<String, CompletableFuture<Optional<Pom>>> poms = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<Optional<Pom>>> fetched = new ConcurrentHashMap<>();
     private final Map<String, Model> importedModels = new ConcurrentHashMap<>();
 
     public BomResolver(PomSource source) {
@@ -377,7 +377,7 @@ public final class BomResolver {
     private Optional<Pom> fetch(String groupId, String artifactId, String version) throws IOException {
         String id = groupId + ":" + artifactId + ":" + version;
         CompletableFuture<Optional<Pom>> mine = new CompletableFuture<>();
-        CompletableFuture<Optional<Pom>> earlier = poms.putIfAbsent(id, mine);
+        CompletableFuture<Optional<Pom>> earlier = fetched.putIfAbsent(id, mine);
         if (earlier != null) {
             return await(earlier, id);
         }
@@ -387,7 +387,7 @@ public final class BomResolver {
             mine.complete(pom);
             return pom;
         } catch (IOException | RuntimeException e) {
-            poms.remove(id, mine);
+            fetched.remove(id, mine);
             mine.completeExceptionally(e);
             throw e;
         }
