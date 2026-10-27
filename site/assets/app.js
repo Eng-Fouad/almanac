@@ -226,20 +226,25 @@ function prepareVersions(json) {
   });
   const streams = [...byStream.values()].sort((a, b) => core.compareVersions(b.stream, a.stream)); // newest first
   const configVis = core.configVersionsOf(list);
+  // releases with extension snapshots: every config snapshot, plus releases with extensions only
+  const extVis = core.extensionVersionsOf(list);
   // streams with a final release (items are in version order), and how many have config at a final
   const finals = streams.map((g) => g.items.filter((i) => !core.isPreRelease(list[i]))).filter((f) => f.length);
+  const hideable = (snapshots) => snapshots.filter((c) => visOff.pre[c] && !visOff.upcoming[c]).length;
   return {
     json,
     list,
     streams,
     configVis,
+    extVis,
     finalStreamCount: finals.length,
     configStreamCount: finals.filter((f) => f.some((i) => list[i].config)).length,
     configAtNewestFinals: finals.every((f) => list[f[f.length - 1]].config),
     visOff,
     visOn,
-    // config snapshots of pre-releases that the toggle hides (not upcoming)
-    hideableSnapshots: configVis.filter((c) => visOff.pre[c] && !visOff.upcoming[c]).length,
+    // config (extension) snapshots of pre-releases that the toggle hides (not upcoming)
+    hideableSnapshots: hideable(configVis),
+    hideableExtSnapshots: hideable(extVis),
     generatedAt: json.generatedAt ?? null,
   };
 }
@@ -1294,7 +1299,10 @@ function comparison(ia, ib, data) {
     out.configRows = core.configRows(out.config, data.config.raw.desc);
     out.configTags = core.tagCounts(out.configRows);
   }
-  if (data.extensions && out.ca != null && out.cb != null) out.ext = core.diffExtensions(data.extensions.raw, out.ca, out.cb);
+  // extensions have snapshots of their own: at every config snapshot, and at releases without config
+  out.ea = core.extensionVersionFor(ia, V.list, V.extVis);
+  out.eb = core.extensionVersionFor(ib, V.list, V.extVis);
+  if (data.extensions && out.ea != null && out.eb != null) out.ext = core.diffExtensions(data.extensions.raw, out.ea, out.eb);
   if (!Object.keys(data.errors).length) {
     if (store.diffs.size >= 12) store.diffs.delete(store.diffs.keys().next().value);
     store.diffs.set(key, out);
@@ -1362,35 +1370,49 @@ function compareHeader(cmp) {
 }
 
 /**
- * Why a comparison has no config (and extension) diff, or null when both releases have config data.
- * A pre-release only uses its own snapshot, so one without a snapshot says so plainly:
- * "No config snapshot for 3.33.0.CR1: dependency changes only."
+ * The snapshots a comparison uses for one kind of data: config, or extensions (which also exist for releases
+ * without config). `a` and `b` are the snapshot indices for From and To, null when a release has none.
  */
-function configGapText(cmp) {
+function snapshotsOf(cmp, kind) {
+  return kind === 'config'
+    ? { a: cmp.ca, b: cmp.cb, all: store.V.configVis, noun: 'config', title: 'Config' }
+    : { a: cmp.ea, b: cmp.eb, all: store.V.extVis, noun: 'extension', title: 'Extensions' };
+}
+
+/**
+ * Why a comparison has no diff of one kind ('config' or 'extension'), or null when both releases have such data.
+ * A pre-release only uses its own snapshot, so one without a snapshot says so plainly:
+ * "No config snapshot for 3.33.0.CR1: dependency changes only." The end names what the comparison still shows.
+ */
+function gapText(cmp, kind) {
   const V = store.V;
+  const s = snapshotsOf(cmp, kind);
   const missing = [];
-  if (cmp.ca == null) missing.push(cmp.ia);
-  if (cmp.cb == null && cmp.ib !== cmp.ia) missing.push(cmp.ib);
+  if (s.a == null) missing.push(cmp.ia);
+  if (s.b == null && cmp.ib !== cmp.ia) missing.push(cmp.ib);
   if (!missing.length) return null;
   const names = (list) => list.map((i) => short(V.list[i].v)).join(' and ');
   const pre = missing.filter((i) => core.isPreRelease(V.list[i]));
   const fin = missing.filter((i) => !core.isPreRelease(V.list[i]));
   const parts = [];
-  if (pre.length) parts.push(`No config snapshot for ${names(pre)}`);
+  if (pre.length) parts.push(`No ${s.noun} snapshot for ${names(pre)}`);
   if (fin.length) {
-    const firstCv = V.configVis.length ? short(V.list[V.configVis[0]].v) : null;
-    parts.push(`${pre.length ? 'no' : 'No'} config data for ${names(fin)}${firstCv ? ` (config snapshots start at ${firstCv})` : ''}`);
+    const first = s.all.length ? short(V.list[s.all[0]].v) : null;
+    parts.push(`${pre.length ? 'no' : 'No'} ${s.noun} data for ${names(fin)}${first ? ` (${s.noun} snapshots start at ${first})` : ''}`);
   }
-  return `${parts.join(', and ')}: dependency changes only.`;
+  // config needs extensions, so only a config gap can leave an extension diff to show
+  const shown = kind === 'config' && cmp.ext ? 'dependency and extension changes only' : 'dependency changes only';
+  return `${parts.join(', and ')}: ${shown}.`;
 }
 
-/** Both releases use one config snapshot, so there is no config or extension diff to show. */
-function sameSnapshotText(cmp) {
+/** Both releases use one snapshot of a kind ('config' or 'extension'), so there is no diff of it to show. */
+function sameSnapshotText(cmp, kind) {
   const V = store.V;
   const { A, B } = cmp;
+  const s = snapshotsOf(cmp, kind);
   const finalsOfOneStream = !core.isPreRelease(A) && !core.isPreRelease(B) && streamOfEntry(A) === streamOfEntry(B);
-  return `Both releases map to the same config snapshot (${short(V.list[cmp.ca].v)}). ${finalsOfOneStream
-    ? 'Config is captured once per stream, so changes between patches of one stream are not tracked.'
+  return `Both releases map to the same ${s.noun} snapshot (${short(V.list[s.a].v)}). ${finalsOfOneStream
+    ? `${s.title} ${kind === 'config' ? 'is' : 'are'} captured once per stream, so changes between patches of one stream are not tracked.`
     : 'Changes between them are not tracked.'}`;
 }
 
@@ -1409,7 +1431,7 @@ function summaryLedger(cmp, data) {
     cells.push(cell('Configuration', 'sec-config', [[c.added, 'added', 'add'], [c.removed, 'removed', 'rem'], [c.changed, 'changed', 'chg']],
       kinds.length ? `Changed: ${kinds.join(' · ')}` : null));
   } else {
-    cells.push(cell('Configuration', 'sec-config', [], data.config ? configGapText(cmp) ?? 'No config data for this pair of releases.' : 'config.json is unavailable.'));
+    cells.push(cell('Configuration', 'sec-config', [], data.config ? gapText(cmp, 'config') ?? 'No config data for this pair of releases.' : 'config.json is unavailable.'));
   }
   if (cmp.bom) {
     const b = cmp.bom.counts;
@@ -1425,7 +1447,7 @@ function summaryLedger(cmp, data) {
     cells.push(cell('Extensions', 'sec-ext', [[e.added, 'added', 'add'], [e.removed, 'removed', 'rem'], [cmp.ext.changed.length, 'changed', 'chg']],
       kinds.length ? kinds.join(' · ') : null));
   } else {
-    cells.push(cell('Extensions', 'sec-ext', [], data.extensions ? configGapText(cmp) ?? 'No extension data for this pair of releases.' : 'extensions.json is unavailable.'));
+    cells.push(cell('Extensions', 'sec-ext', [], data.extensions ? gapText(cmp, 'extension') ?? 'No extension data for this pair of releases.' : 'extensions.json is unavailable.'));
   }
   return h('section', { class: 'ledger', 'aria-label': 'Summary of changes' }, cells);
 }
@@ -1467,12 +1489,14 @@ const CONFIG_CHIPS = [
 ];
 
 /**
- * Why the config snapshots differ from the releases, for the note under the Configuration heading.
- * Finals without a snapshot of their own use their stream's; pre-releases always use their own.
+ * Why the snapshots of a kind ('config' or 'extension') differ from the releases, for the note under the
+ * Configuration or Extensions heading. Finals without a snapshot of their own use their stream's; pre-releases
+ * always use their own.
  */
-function snapshotReason(cmp) {
+function snapshotReason(cmp, kind) {
   const V = store.V;
-  const borrowed = [[cmp.ia, cmp.ca], [cmp.ib, cmp.cb]].filter(([i, c]) => i !== c);
+  const s = snapshotsOf(cmp, kind);
+  const borrowed = [[cmp.ia, s.a], [cmp.ib, s.b]].filter(([i, c]) => i !== c);
   if (!borrowed.length) return null;
   const inStream = borrowed.every(([i, c]) => !core.isPreRelease(V.list[c]) && streamOfEntry(V.list[c]) === streamOfEntry(V.list[i]));
   if (inStream) return ' (one snapshot per stream, at its newest patch)';
@@ -1490,7 +1514,7 @@ function configSection(cmp, data) {
     const mixed = xa.configSource && xb.configSource && xa.configSource !== xb.configSource;
     note = h('p', { class: 'sec-note' },
       'Config compared at ', h('span', { class: 'ver' }, short(xa.v)), ' → ', h('span', { class: 'ver' }, short(xb.v)),
-      snapshotReason(cmp),
+      snapshotReason(cmp, 'config'),
       xa.configSource && xb.configSource
         ? frag('; extracted from ', h('abbr', { title: SOURCE_TITLE[xa.configSource] ?? '' }, xa.configSource), ' → ', h('abbr', { title: SOURCE_TITLE[xb.configSource] ?? '' }, xb.configSource),
           mixed ? ', so a few differences may come from the extraction method rather than Quarkus' : '')
@@ -1499,8 +1523,8 @@ function configSection(cmp, data) {
   }
   const sec = h('section', { class: 'sec', id: 'sec-config', 'aria-labelledby': 'sec-config-h' }, sectionHead(2, 'Configuration', 'sec-config-h', note));
   if (!data.config) return add(sec, [missingData('config.json', data.errors.config)]);
-  if (ca == null || cb == null) return add(sec, [emptyNote(configGapText(cmp))]);
-  if (ca === cb) return add(sec, [emptyNote(sameSnapshotText(cmp))]);
+  if (ca == null || cb == null) return add(sec, [emptyNote(gapText(cmp, 'config'))]);
+  if (ca === cb) return add(sec, [emptyNote(sameSnapshotText(cmp, 'config'))]);
   const rows = cmp.configRows;
   if (!rows.length) return add(sec, [emptyNote('No config property was added, removed or changed between these snapshots.')]);
 
@@ -1819,13 +1843,20 @@ function cappedList(cls, items, renderItem) {
 }
 
 function extSection(cmp, data) {
-  const sec = h('section', { class: 'sec', id: 'sec-ext', 'aria-labelledby': 'sec-ext-h' },
-    sectionHead(4, 'Extensions', 'sec-ext-h', h('p', { class: 'sec-note' }, 'From quarkus-extension.yaml in the runtime jars, read at the same config snapshots.')));
+  const V = store.V;
+  const { ea, eb } = cmp;
+  const note = h('p', { class: 'sec-note' }, 'Metadata from each extension\'s quarkus-extension.yaml',
+    ea != null && eb != null
+      ? frag(', compared at ', h('span', { class: 'ver' }, short(V.list[ea].v)), ' → ', h('span', { class: 'ver' }, short(V.list[eb].v)),
+        snapshotReason(cmp, 'extension'))
+      : null,
+    '.');
+  const sec = h('section', { class: 'sec', id: 'sec-ext', 'aria-labelledby': 'sec-ext-h' }, sectionHead(4, 'Extensions', 'sec-ext-h', note));
   if (!data.extensions) return add(sec, [missingData('extensions.json', data.errors.extensions)]);
-  const gap = configGapText(cmp);
+  const gap = gapText(cmp, 'extension');
   if (gap) return add(sec, [emptyNote(gap)]);
   if (!cmp.ext) return add(sec, [emptyNote('No extension data for this pair of releases.')]);
-  if (cmp.ca === cmp.cb) return add(sec, [emptyNote(sameSnapshotText(cmp))]);
+  if (ea === eb) return add(sec, [emptyNote(sameSnapshotText(cmp, 'extension'))]);
   const e = cmp.ext;
   if (!e.added.length && !e.removed.length && !e.changed.length) return add(sec, [emptyNote('No extension was added, removed, relocated, renamed or changed status.')]);
   const extLink = (id) => h('a', { class: 'mono', href: link.extension(id) }, id);
@@ -2035,8 +2066,8 @@ async function renderArtifact(r) {
   const hist = art ? core.artifactHistory(bom.raw, id, V.list, { vis }) : null;
   const last = V.list[hist ? hist.last : vis.indices[vis.indices.length - 1]];
   const idEl = h('span', { class: 'prop-name' }, id);
-  // With a BOM history the switch filters releases; on an extension-only page it filters config snapshots.
-  const toggle = preToggle('timeline', hist ? {} : { count: V.hideableSnapshots, noun: 'pre-release snapshot' });
+  // With a BOM history the switch filters releases; on an extension-only page it filters extension snapshots.
+  const toggle = preToggle('timeline', hist ? {} : { count: V.hideableExtSnapshots, noun: 'pre-release snapshot' });
   if (toggle) onPrefChange(toggle, rerenderInPlace);
   let status = null;
   if (hist) {
@@ -2110,7 +2141,7 @@ function artifactRanges(hist, toggle) {
 function extensionEventBody(ev) {
   switch (ev.type) {
     case 'present':
-      return h('p', { class: 'tl-text' }, chip('neutral', 'present'), ' In the first config snapshot of this dataset.', ev.state.r ? ` Relocated to ${ev.state.r}.` : '');
+      return h('p', { class: 'tl-text' }, chip('neutral', 'present'), ' In the first extension snapshot of this dataset.', ev.state.r ? ` Relocated to ${ev.state.r}.` : '');
     case 'introduced':
     case 'reintroduced':
       return h('p', { class: 'tl-text' }, chip('added', ev.type), ev.state.r ? ` As a relocation to ${ev.state.r}.` : statusChip(ev.state.s));
@@ -2130,9 +2161,8 @@ function extensionEventBody(ev) {
 function extensionPanel(x, data, toggle) {
   const V = store.V;
   const exts = data.extensions.raw;
-  const cvs = data.config ? data.config.raw.versions : V.configVis;
   const vis = currentVis();
-  const hist = core.extensionHistory(exts, x.id, cvs, { vis });
+  const hist = core.extensionHistory(exts, x.id, V.extVis, { vis });
   const s = hist.latest ?? {};
   const kv = h('dl', { class: 'kv' });
   const row = (k, ...v) => kv.append(h('dt', null, k), h('dd', null, v));
@@ -2169,11 +2199,11 @@ function extensionPanel(x, data, toggle) {
   }
   return frag(
     h('section', { class: 'sec', 'aria-labelledby': 'ext-h' },
-      sectionHead(2, 'Extension', 'ext-h', h('p', { class: 'sec-note' }, 'Metadata from quarkus-extension.yaml at the config snapshots.')),
+      sectionHead(2, 'Extension', 'ext-h', h('p', { class: 'sec-note' }, 'Metadata from quarkus-extension.yaml at the extension snapshots.')),
       kv),
     h('section', { class: 'sec', 'aria-labelledby': 'ext-history-h' },
       sectionHead(3, 'Extension history', 'ext-history-h',
-        h('p', { class: 'sec-note' }, 'Status, name and relocation changes between the config snapshots shown.', hiddenSnapshotsNote(hist)),
+        h('p', { class: 'sec-note' }, 'Status, name and relocation changes between the extension snapshots shown.', hiddenSnapshotsNote(hist)),
         toggle ? h('div', { class: 'sec-tools' }, toggle) : null),
       hist.widened ? h('p', { class: 'note' }, 'This extension only appears in pre-release snapshots, so they are shown here although pre-releases are hidden.') : null,
       timeline(hist.events, extensionEventBody)),
@@ -2200,12 +2230,14 @@ async function renderVersions() {
           h('span', { class: 'ver' }, short(x.v)),
           dateEl(x.date),
           preChip(x),
-          x.config ? h('span', { class: 'cfg-mark', title: `Config snapshot (${x.configSource ?? 'unknown source'})` }, 'config') : null));
+          x.config ? h('span', { class: 'cfg-mark', title: `Config snapshot (${x.configSource ?? 'unknown source'})` }, 'config')
+            : x.ext ? h('span', { class: 'cfg-mark', title: 'Extension snapshot, no config snapshot' }, 'extensions') : null));
       })))));
   }
   const toggle = preToggle('releases');
   if (toggle) onPrefChange(toggle, rerenderInPlace);
   const preSnapshots = V.configVis.some((c) => V.visOff.pre[c]);
+  const extOnly = V.extVis.some((e) => !V.list[e].config);
   return frag(
     h('header', { class: 'page-head' },
       h('p', { class: 'kicker' }, 'Releases'),
@@ -2213,7 +2245,8 @@ async function renderVersions() {
       h('p', { class: 'lede' }, `${plural(vis.indices.length, 'release')} in ${plural(V.streams.length, 'stream')}, newest first`,
         vis.hidden ? `, ${plural(vis.hidden, 'pre-release')} hidden` : null, `. ${plural(ltsCount, 'stream')} marked LTS. `,
         'Releases tagged ', h('span', { class: 'cfg-mark' }, 'config'), ` are the config snapshots, taken ${V.configAtNewestFinals ? 'at' : 'for'} ${configCoverage(V)}`,
-        preSnapshots ? ' and at some pre-releases, which are compared only at their own snapshot' : '', '.'),
+        preSnapshots ? ' and at some pre-releases, which are compared only at their own snapshot' : '', '.',
+        extOnly ? frag(' Releases tagged ', h('span', { class: 'cfg-mark' }, 'extensions'), ' have extension data but no config snapshot.') : null),
       toggle ? h('div', { class: 'page-tools' }, toggle) : null),
     h('div', { class: 'table-scroll' },
       h('table', { class: 'tbl tbl-streams' },
@@ -2230,6 +2263,7 @@ async function renderVersion(r) {
   const isPre = core.isPreRelease(x);
   const nb = core.versionNeighbours(V.json, i, { vis: currentVis() });
   const cv = core.configVersionFor(i, V.list, V.configVis);
+  const ev = core.extensionVersionFor(i, V.list, V.extVis);
   const newestFinal = core.newestFinalIndex(V.list);
   const compares = [];
   const addCompare = (label, j, note) => {
@@ -2263,12 +2297,18 @@ async function renderVersion(r) {
   const row = (k, ...v) => kv.append(h('dt', null, k), h('dd', null, v));
   row('Released', dateEl(x.date) ?? h('em', { class: 'none' }, 'unknown'));
   row('Stream', h('span', { class: 'mono' }, x.stream || core.stream(x.v)), x.lts ? frag(' ', chip('lts', 'LTS')) : null);
+  const shown = ev == null ? 'dependency changes only' : 'dependency and extension changes only';
   row('Config snapshot', cv == null
     ? isPre
-      ? frag(h('em', { class: 'none' }, 'none'), h('span', { class: 'kv-sub' }, 'Pre-releases are compared only at their own config snapshot, so comparisons with this release show dependency changes only.'))
+      ? frag(h('em', { class: 'none' }, 'none'), h('span', { class: 'kv-sub' }, `Pre-releases are compared only at their own config snapshot, so comparisons with this release show ${shown}.`))
       : h('em', { class: 'none' }, 'none: no config data for this release')
-    : frag(verLink(V.list[cv].v), cv === i ? h('span', { class: 'muted' }, ' (this release)') : h('span', { class: 'muted' }, ' (used for config and extension comparisons)'),
+    : frag(verLink(V.list[cv].v), h('span', { class: 'muted' }, cv === i ? ' (this release)' : ev === cv ? ' (used for config and extension comparisons)' : ' (used for config comparisons)'),
       V.list[cv].configSource ? h('span', { class: 'kv-sub' }, SOURCE_TITLE[V.list[cv].configSource] ?? V.list[cv].configSource) : null));
+  // extension snapshots also exist without config (a config snapshot always has one): name the one used when it
+  // is not the config snapshot
+  if (ev != null && ev !== cv) {
+    row('Extension snapshot', verLink(V.list[ev].v), h('span', { class: 'muted' }, ev === i ? ' (this release)' : ' (used for extension comparisons)'));
+  }
   const managedN = h('span', null, '…');
   const propsN = h('span', null, '…');
   const extsN = h('span', null, '…');
@@ -2289,15 +2329,18 @@ async function renderVersion(r) {
   });
   if (cv == null) {
     propsN.textContent = isPre ? 'no config snapshot' : 'no config data';
-    extsN.textContent = isPre ? 'no config snapshot' : 'no config data';
   } else {
     loadFile('config').then((c) => {
       propsN.textContent = `${fmt(c.raw.props.filter((p) => core.stateAt(p.h, cv) != null).length)} at ${short(V.list[cv].v)}`;
     }).catch(() => {
       propsN.textContent = 'config.json unavailable';
     });
+  }
+  if (ev == null) {
+    extsN.textContent = isPre ? 'no extension snapshot' : 'no extension data';
+  } else {
     loadFile('extensions').then((e) => {
-      extsN.textContent = `${fmt(e.raw.exts.filter((xx) => core.stateAt(xx.h, cv) != null).length)} at ${short(V.list[cv].v)}`;
+      extsN.textContent = `${fmt(e.raw.exts.filter((xx) => core.stateAt(xx.h, ev) != null).length)} at ${short(V.list[ev].v)}`;
     }).catch(() => {
       extsN.textContent = 'extensions.json unavailable';
     });
@@ -2308,7 +2351,7 @@ async function renderVersion(r) {
       h('p', { class: 'kicker' }, isPre ? 'Pre-release' : 'Release', ' · stream ', x.stream || core.stream(x.v)),
       h('h1', { class: 'page-title page-title--ver', tabindex: '-1' }, short(x.v)),
       h('div', { class: 'badges' }, dateEl(x.date), versionChips(x), V.visOff.upcoming[i] ? upcomingChip() : null,
-        x.config ? h('span', { class: 'cfg-mark' }, 'config snapshot') : null)),
+        x.config ? h('span', { class: 'cfg-mark' }, 'config snapshot') : x.ext ? h('span', { class: 'cfg-mark' }, 'extension snapshot') : null)),
     h('section', { class: 'sec', 'aria-labelledby': 'vq-h' },
       sectionHead(1, 'Compare with', 'vq-h', h('p', { class: 'sec-note' }, `What changed on the way to ${short(x.v)}.`)),
       quick, forward),

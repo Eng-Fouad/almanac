@@ -15,6 +15,7 @@ const {
   propertyHistory, extensionHistory, artifactHistory, newestFinalIndex, newestInStream, ltsStreamsPresent,
   defaultPair, quickPicks, versionNeighbours, formatDate, spanLabel, CONFIG_FILTER_TAGS, BOM_KIND_ORDER,
   isPreRelease, preQualifier, releaseVisibility, visibleOnly, streamStartIndex, streamSpan, releasedApart, spanApart,
+  extensionVersionsOf, extensionVersionFor, snapshotVersionFor,
 } = core;
 
 const SAMPLE = join(dirname(fileURLToPath(import.meta.url)), '..', 'dev', 'sample');
@@ -877,10 +878,13 @@ describe('sample dataset (dev/sample) follows the site data format', () => {
       assert.equal(x.pre, !isFinal(x.v));
       assert.equal(x.lts, vj.lts.includes(x.stream));
       assert.equal(typeof x.config, 'boolean');
+      assert.equal(typeof x.ext, 'boolean');
       assert.match(x.date, /^\d{4}-\d{2}-\d{2}$/);
       if (x.config) assert.ok(['model', 'bytecode'].includes(x.configSource));
+      if (x.config) assert.ok(x.ext, `${x.v}: a config snapshot comes with extensions`);
     }
     assert.deepEqual(configVersionsOf(list), config.versions);
+    assert.deepEqual(extensionVersionsOf(list), config.versions, 'the sample has extensions exactly at its config snapshots');
   });
 
   const checkHistory = (h, max, label) => {
@@ -943,9 +947,10 @@ describe('sample dataset (dev/sample) follows the site data format', () => {
   test('extensions.json', () => {
     const ids = extensions.exts.map((x) => x.id);
     assert.deepEqual(ids, [...ids].sort());
+    const evs = extensionVersionsOf(list);
     for (const x of extensions.exts) {
       checkHistory(x.h, extensions.states.length, x.id);
-      for (const [vi] of x.h) assert.ok(config.versions.includes(vi));
+      for (const [vi] of x.h) assert.ok(evs.includes(vi), `${x.id}: points only at extension versions`);
     }
     const all = diffExtensions(extensions, config.versions[0], config.versions[config.versions.length - 1]);
     const span = diffExtensions(extensions, config.versions[2], config.versions[3]);
@@ -980,6 +985,9 @@ describe('sample dataset (dev/sample) follows the site data format', () => {
           if (list[vi].pre) assert.ok(c === null || c === vi, `${list[vi].v} uses only its own snapshot`);
           else assert.notEqual(c, null, `${list[vi].v} has config data`);
         }
+        // extensions use their own snapshots; in the sample (as in every 3.x release) they are the config snapshots
+        assert.equal(extensionVersionFor(a, list), ca);
+        assert.equal(extensionVersionFor(b, list), cb);
         if (ca == null || cb == null) {
           skipped++;
           continue;
@@ -993,7 +1001,7 @@ describe('sample dataset (dev/sample) follows the site data format', () => {
       const vis = releaseVisibility(list, { showPre });
       for (const p of config.props) assert.ok(propertyHistory(config, p, { vis }).events.length >= 1, p.k);
       for (const art of bom.artifacts) assert.ok(artifactHistory(bom, art.id, list, { vis }).ranges.length >= 1, art.id);
-      for (const x of extensions.exts) assert.ok(extensionHistory(extensions, x.id, config.versions, { vis }).events.length >= 1, x.id);
+      for (const x of extensions.exts) assert.ok(extensionHistory(extensions, x.id, extensionVersionsOf(list), { vis }).events.length >= 1, x.id);
     }
     for (const p of config.props) assert.ok(propertyHistory(config, p).events.length >= 1);
     for (const art of bom.artifacts) assert.ok(artifactHistory(bom, art.id, list).ranges.length >= 1);
@@ -1219,6 +1227,120 @@ describe('pre-releases: timelines over the visible snapshots', () => {
     const h = artifactHistory(bom, 'io.vertx:vertx-core', list, { vis: off });
     assert.equal(list[h.last].v, '4.0.0.Beta1', 'upcoming, so visible');
     assert.equal(h.current.value, '5.0.4');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+describe('extension snapshots without config', () => {
+  // 2.x releases with extension snapshots only (read from the extension catalogs), 3.x ones with config as well,
+  // and a newest release with extensions only
+  const list = [
+    { v: '2.15.3.Final', ext: true },
+    { v: '2.16.0.CR1', ext: false },
+    { v: '2.16.5.Final', ext: false },
+    { v: '2.16.12.Final', ext: true },
+    { v: '3.0.0.Final', ext: false },
+    { v: '3.0.4.Final', config: true, configSource: 'bytecode', ext: true },
+    { v: '3.2.12.Final', config: true, configSource: 'bytecode', ext: true },
+    { v: '3.3.0', ext: true },
+  ].map((x) => ({ stream: stream(x.v), pre: !isFinal(x.v), lts: false, config: false, ...x }));
+  const idx = (v) => findVersionIndex(list, v);
+  const name = (i) => (i == null ? null : list[i].v);
+  const extensions = {
+    states: [
+      /* 0 */ { n: 'RESTEasy Reactive', s: 'preview' },
+      /* 1 */ { n: 'RESTEasy Reactive', s: 'stable' },
+      /* 2 */ { n: 'OpenTelemetry Exporter Jaeger', s: 'preview' },
+      /* 3 */ { r: 'io.quarkiverse.opentelemetry.exporter:quarkus-opentelemetry-exporter-jaeger' },
+      /* 4 */ { n: 'Info', s: 'preview' },
+      /* 5 */ { n: 'Newest', s: 'experimental' },
+    ],
+    exts: [
+      { id: 'quarkus-info', h: [[5, 4]] },
+      { id: 'quarkus-newest', h: [[7, 5]] },
+      { id: 'quarkus-opentelemetry-exporter-jaeger', h: [[0, 2], [3, null], [5, 3]] },
+      { id: 'quarkus-resteasy-reactive', h: [[0, 0], [3, 1]] },
+    ],
+  };
+
+  test('extension snapshots come from the ext flags; data without them has extensions at the config snapshots', () => {
+    assert.deepEqual(extensionVersionsOf(list), [0, 3, 5, 6, 7]);
+    assert.deepEqual(configVersionsOf(list), [5, 6]);
+    const before = list.map(({ ext, ...rest }) => rest);
+    assert.deepEqual(extensionVersionsOf(before), [5, 6]);
+    assert.deepEqual(extensionVersionsOf([]), []);
+    assert.deepEqual(extensionVersionsOf(null), []);
+  });
+
+  test('the extension snapshot of a release follows the config rule over the extension snapshots', () => {
+    const ext = (v) => name(extensionVersionFor(idx(v), list));
+    const cfg = (v) => name(configVersionFor(idx(v), list));
+    assert.equal(ext('2.15.3.Final'), '2.15.3.Final');
+    assert.equal(ext('2.16.5.Final'), '2.16.12.Final', 'the stream snapshot, a later patch');
+    assert.equal(ext('2.16.0.CR1'), null, 'a pre-release never borrows one');
+    assert.equal(ext('3.0.0.Final'), '3.0.4.Final');
+    assert.equal(ext('3.3.0'), '3.3.0');
+    assert.equal(cfg('2.16.5.Final'), null, 'no config snapshot in the stream or before it');
+    assert.equal(cfg('2.16.12.Final'), null);
+    assert.equal(cfg('3.3.0'), '3.2.12.Final', 'config falls back to the latest snapshot before it');
+    assert.equal(extensionVersionFor(-1, list), null);
+    assert.equal(extensionVersionFor(0, null), null);
+    assert.equal(snapshotVersionFor(idx('3.0.0.Final'), list, [0, 3]), idx('2.16.12.Final'), 'any snapshot list');
+  });
+
+  test('diffs and histories use the extension snapshots', () => {
+    const between = (a, b) => diffExtensions(extensions, extensionVersionFor(idx(a), list), extensionVersionFor(idx(b), list));
+    const d = between('2.15.3.Final', '2.16.5.Final');
+    assert.deepEqual(d.changed.map((c) => [c.id, c.kinds]), [['quarkus-resteasy-reactive', ['status']]]);
+    assert.deepEqual(d.removed.map((c) => c.id), ['quarkus-opentelemetry-exporter-jaeger']);
+    const across = between('2.16.12.Final', '3.2.12.Final');
+    assert.deepEqual(across.added.map((c) => [c.id, c.b.r ?? null]), [
+      ['quarkus-info', null],
+      ['quarkus-opentelemetry-exporter-jaeger', 'io.quarkiverse.opentelemetry.exporter:quarkus-opentelemetry-exporter-jaeger'],
+    ]);
+    const evs = extensionVersionsOf(list);
+    const h = extensionHistory(extensions, 'quarkus-resteasy-reactive', evs);
+    assert.deepEqual(h.events.map((e) => [list[e.vi].v, e.type, ...(e.kinds ?? [])]), [
+      ['2.15.3.Final', 'present'],
+      ['2.16.12.Final', 'changed', 'status'],
+    ]);
+    assert.deepEqual(h.ranges, [{ from: 0, to: 7 }]);
+    const jaeger = extensionHistory(extensions, 'quarkus-opentelemetry-exporter-jaeger', evs);
+    assert.deepEqual(jaeger.events.map((e) => [list[e.vi].v, e.type]), [
+      ['2.15.3.Final', 'present'], ['2.16.12.Final', 'removed'], ['3.0.4.Final', 'reintroduced'],
+    ]);
+    // over the config snapshots alone (the old rule) the 2.x history would be lost
+    assert.deepEqual(extensionHistory(extensions, 'quarkus-resteasy-reactive', configVersionsOf(list)).events.map((e) => e.type), ['present']);
+  });
+
+  test('pre-releases hide their extension snapshots like their config snapshots', () => {
+    const vs = [...list.slice(0, 4), { v: '3.0.0.CR1', stream: '3.0', pre: true, lts: false, config: false, ext: true }, ...list.slice(4)];
+    const evs = extensionVersionsOf(vs);
+    assert.deepEqual(evs, [0, 3, 4, 6, 7, 8]);
+    const off = releaseVisibility(vs);
+    assert.deepEqual(visibleOnly(evs, off), [0, 3, 6, 7, 8]);
+    assert.equal(extensionVersionFor(4, vs), 4, 'a pre-release with an extension snapshot uses it');
+    assert.equal(configVersionFor(4, vs), null, 'and still has no config snapshot');
+  });
+
+  test('search: an extension is current when the newest extension snapshot has it', () => {
+    const config = { versions: [5, 6], states: [], props: [] };
+    const index = buildSearchIndex({ config, extensions, versions: list });
+    const current = (id) => index.entries.find((e) => e.type === 'extension' && e.id === id).current;
+    assert.equal(current('quarkus-newest'), true, 'only in 3.3.0, which has no config snapshot');
+    assert.equal(current('quarkus-resteasy-reactive'), true);
+    // data without ext flags: the newest config snapshot decides, as before
+    const old = buildSearchIndex({ config, extensions, versions: list.map(({ ext, ...rest }) => rest) });
+    assert.equal(old.entries.find((e) => e.id === 'quarkus-newest').current, false);
+  });
+
+  test('3.x is unchanged: with extensions at the config snapshots both rules agree for every release', () => {
+    const vj = load('versions');
+    for (const flags of [vj.versions, vj.versions.map(({ ext, ...rest }) => rest)]) {
+      for (let i = 0; i < flags.length; i++) {
+        assert.equal(extensionVersionFor(i, flags), configVersionFor(i, flags), flags[i].v);
+      }
+    }
   });
 });
 

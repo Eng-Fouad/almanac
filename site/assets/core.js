@@ -276,6 +276,21 @@ export function configVersionsOf(versions) {
   return out;
 }
 
+/**
+ * Indices of the releases that have extension snapshots, derived from `versions[].ext`. A release may have one
+ * without a config snapshot, never the reverse. Data assembled before the flag existed had extension snapshots
+ * exactly at the config snapshots, so without any `ext` field the `config` flags are used.
+ */
+export function extensionVersionsOf(versions) {
+  const list = Array.isArray(versions) ? versions : [];
+  if (!list.some((x) => x && typeof x.ext === 'boolean')) return configVersionsOf(list);
+  const out = [];
+  list.forEach((x, i) => {
+    if (x && x.ext) out.push(i);
+  });
+  return out;
+}
+
 function streamOf(entry) {
   if (!entry) return '';
   if (typeof entry === 'string') return stream(entry);
@@ -338,18 +353,42 @@ export function visibleOnly(indices, vis) {
 }
 
 /**
- * The config snapshot used for release `vi`, or null ("no config data").
- * - A pre-release uses only its own snapshot: `vi` itself when it is a config version, else null. It never
- *   borrows another release's snapshot, not even one of its stream.
- * - A final uses the stream rule: a final snapshot of its stream (the greatest one ≤ vi, else the nearest one
- *   after it); else a pre-release snapshot of its stream (same order); otherwise the latest config version ≤ vi.
+ * The config snapshot used for release `vi`, or null ("no config data"); see snapshotVersionFor.
  * @param {number} vi index into versions
  * @param {Array<{v:string, stream?:string, pre?:boolean, config?:boolean}>} versions
  * @param {number[]} [configVis] config version indices (defaults to the `config` flags)
  */
 export function configVersionFor(vi, versions, configVis) {
+  if (!Array.isArray(versions)) return null;
+  return snapshotVersionFor(vi, versions, configVis ?? configVersionsOf(versions));
+}
+
+/**
+ * The extension snapshot used for release `vi`, or null ("no extension data"): the config rule over the
+ * extension snapshots, which may exist where config does not (see snapshotVersionFor).
+ * @param {number} vi index into versions
+ * @param {Array<{v:string, stream?:string, pre?:boolean, config?:boolean, ext?:boolean}>} versions
+ * @param {number[]} [extVis] extension version indices (defaults to extensionVersionsOf)
+ */
+export function extensionVersionFor(vi, versions, extVis) {
+  if (!Array.isArray(versions)) return null;
+  return snapshotVersionFor(vi, versions, extVis ?? extensionVersionsOf(versions));
+}
+
+/**
+ * The snapshot used for release `vi` among the releases `snapshots` that have one (config or extension snapshots),
+ * or null.
+ * - A pre-release uses only its own snapshot: `vi` itself when it has one, else null. It never borrows another
+ *   release's snapshot, not even one of its stream.
+ * - A final uses the stream rule: a final snapshot of its stream (the greatest one ≤ vi, else the nearest one
+ *   after it); else a pre-release snapshot of its stream (same order); otherwise the latest snapshot ≤ vi.
+ * @param {number} vi index into versions
+ * @param {Array<{v:string, stream?:string, pre?:boolean}>} versions
+ * @param {number[]} snapshots indices of the releases that have a snapshot, ascending
+ */
+export function snapshotVersionFor(vi, versions, snapshots) {
   if (!Array.isArray(versions) || vi == null || vi < 0 || vi >= versions.length) return null;
-  const cvs = configVis ?? configVersionsOf(versions);
+  const cvs = Array.isArray(snapshots) ? snapshots : [];
   if (isPreRelease(versions[vi])) return cvs.includes(vi) ? vi : null;
   const s = streamOf(versions[vi]);
   const best = { final: [-1, -1], pre: [-1, -1] }; // [greatest ≤ vi, nearest after vi]
@@ -792,7 +831,7 @@ export function extensionChangeKinds(a, b) {
   return kinds;
 }
 
-/** Extension diff between config versions `a` and `b`. */
+/** Extension diff between the extension snapshots at release indices `a` and `b` (see extensionVersionFor). */
 export function diffExtensions(extensions, a, b) {
   const added = [];
   const removed = [];
@@ -853,6 +892,10 @@ export function buildSearchIndex({ config, bom, extensions, versions } = {}) {
   const lastRelease = versions && versions.length ? versions.length - 1 : null;
   const cvs = config?.versions ?? [];
   const lastConfig = cvs.length ? cvs[cvs.length - 1] : null;
+  // extension snapshots are flagged `ext`; data without the flag has them at the config snapshots
+  const flagged = Array.isArray(versions) && versions.some((x) => x && typeof x.ext === 'boolean');
+  const evs = flagged ? extensionVersionsOf(versions) : cvs;
+  const lastExtension = evs.length ? evs[evs.length - 1] : null;
   if (config) {
     for (const p of config.props) {
       const si = latestValue(p.h);
@@ -907,7 +950,7 @@ export function buildSearchIndex({ config, bom, extensions, versions } = {}) {
         relocatedTo: s?.r ?? null,
         fields,
         alts: [lower(x.id.replace(/^quarkus-/, ''))],
-        current: lastConfig != null && stateAt(x.h, lastConfig) != null,
+        current: lastExtension != null && stateAt(x.h, lastExtension) != null,
       });
     }
   }
@@ -1039,13 +1082,13 @@ export function propertyHistory(config, keyOrProp, { vis } = {}) {
 }
 
 /**
- * History of one extension over the config snapshots (same event model as properties, change kinds
- * relocated / unrelocated / status / renamed). `vis` as for propertyHistory.
+ * History of one extension over the extension snapshots `extVis` (see extensionVersionsOf; same event model as
+ * properties, change kinds relocated / unrelocated / status / renamed). `vis` as for propertyHistory.
  */
-export function extensionHistory(extensions, id, configVis, { vis } = {}) {
+export function extensionHistory(extensions, id, extVis, { vis } = {}) {
   const x = extensions.exts.find((e) => e.id === id);
   if (!x) return null;
-  const t = visibleTimeline(x.h, configVis, extensions.states, extensionChangeKinds, vis);
+  const t = visibleTimeline(x.h, extVis, extensions.states, extensionChangeKinds, vis);
   return { id, ext: x, ...t };
 }
 
