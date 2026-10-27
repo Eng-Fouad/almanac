@@ -41,25 +41,30 @@ import java.util.stream.Collectors;
 
 /// Turns per-version snapshots into the compact site data: `versions.json`, `bom.json`
 /// (change points, `"="` for "the release's own version"), `config.json` (interned states, change points
-/// over config versions, latest descriptions) and `extensions.json`.
+/// over config versions, latest descriptions) and `extensions.json` (change points over extension versions: the
+/// releases with an extensions snapshot, flagged `ext` in `versions.json`).
 ///
 /// Releases are [added][#add] in ascending version order, then [#build] produces the documents.
 /// Before building config histories, each snapshot is normalised by [unnamed-key folding][#foldUnnamedKeys].
 public final class HistoryBuilder {
 
-    /// The snapshots of one release. `config` and `extensions` are both present for config versions and
-    /// both null otherwise.
+    /// The snapshots of one release. A release with config also has extensions; one with extensions may have no
+    /// config (extensions read from the release's extension catalog, before config was extracted).
     public record Release(BomSnapshot bom, ConfigSnapshot config, ExtensionsSnapshot extensions) {
 
         public Release {
             Objects.requireNonNull(bom, "bom");
-            if ((config == null) != (extensions == null)) {
-                throw new IllegalArgumentException("config and extensions snapshots go together");
+            if (config != null && extensions == null) {
+                throw new IllegalArgumentException("a config snapshot needs the release's extensions snapshot");
             }
         }
 
         boolean hasConfig() {
             return config != null;
+        }
+
+        boolean hasExtensions() {
+            return extensions != null;
         }
     }
 
@@ -91,6 +96,7 @@ public final class HistoryBuilder {
     private final Interner configStates = new Interner();
     private final Interner extensionStates = new Interner();
     private final ArrayNode configVersions = NODES.arrayNode();
+    private int extensionVersions;
     private final Map<String, String> descriptions = new TreeMap<>();
     private QuarkusVersion last;
 
@@ -142,11 +148,11 @@ public final class HistoryBuilder {
             Json.writeCompact(path, file.getValue());
             Log.info("assemble: wrote %s (%,d bytes)", path, Files.size(path));
         }
-        Log.info("assemble: %d releases (%d pre-release, %d with config), %d BOM artifacts, %d config keys in %d "
-                        + "states, %d extensions in %d states", builder.versionRows.size(),
+        Log.info("assemble: %d releases (%d pre-release, %d with config, %d with extensions), %d BOM artifacts, %d "
+                        + "config keys in %d states, %d extensions in %d states", builder.versionRows.size(),
                 versions.stream().filter(version -> !version.isFinal()).count(), builder.configVersions.size(),
-                builder.bomHistory.size(), builder.configHistory.size(), builder.configStates.size(),
-                builder.extensionHistory.size(), builder.extensionStates.size());
+                builder.extensionVersions, builder.bomHistory.size(), builder.configHistory.size(),
+                builder.configStates.size(), builder.extensionHistory.size(), builder.extensionStates.size());
     }
 
     /// The first five names, then `...` when there are more.
@@ -173,6 +179,7 @@ public final class HistoryBuilder {
         if (release.hasConfig()) {
             row.put("configSource", release.config().source());
         }
+        row.put("ext", release.hasExtensions());
 
         Map<String, JsonNode> managed = new HashMap<>();
         for (ManagedDep dep : bom.deps()) {
@@ -190,7 +197,9 @@ public final class HistoryBuilder {
                 }
             }
             configHistory.observe(vi, properties);
-
+        }
+        if (release.hasExtensions()) {
+            extensionVersions++;
             Map<String, JsonNode> extensions = new HashMap<>();
             for (ExtensionInfo extension : release.extensions().extensions()) {
                 extensions.put(extension.id(), IntNode.valueOf(extensionStates.intern(extensionState(extension))));

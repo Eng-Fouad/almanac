@@ -64,14 +64,15 @@ public final class AssembleCommand implements Callable<Integer> {
         }
         HistoryBuilder.assemble(source, workspace.selectForSite(withBom), site.resolve("data"), Instant.now());
         if (includeWork) {
-            Log.info("assemble: --include-work used %d BOM and %d config snapshots from %s that the dataset does not "
-                    + "have", source.workBoms(), source.workConfigs(), work.root());
+            Log.info("assemble: --include-work used %d BOM, %d config and %d extensions snapshots from %s that the "
+                    + "dataset does not have", source.workBoms(), source.workConfigs(), source.workExtensions(),
+                    work.root());
         }
     }
 
     /// Logs the work snapshots that the dataset lacks and that this run therefore leaves out.
     private static void reportLeftOut(Dataset dataset, SnapshotStore work) throws IOException {
-        for (Kind kind : List.of(Kind.BOM, Kind.CONFIG)) {
+        for (Kind kind : Kind.values()) {
             List<String> missing = new ArrayList<>();
             for (String version : work.versionsWith(kind.snapshotFile())) {
                 if (!dataset.has(version, kind)) {

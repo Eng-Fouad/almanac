@@ -51,8 +51,9 @@ class DatasetCommandTest {
             Run imported = run("dataset", "import", "--offline", "--work", work.toString(), "--dataset",
                     dataset.toString(), "--versions", "all");
             assertEquals(1, imported.exitCode(), imported.log());
-            assertTrue(imported.log().contains("dataset import: added 7 (bom 3, config 2, extensions 2); replaced 0; "
-                    + "unchanged 0; refused 2"), imported.log());
+            // the unvalidated config stays out; its extensions need no config and are imported
+            assertTrue(imported.log().contains("dataset import: added 8 (bom 3, config 2, extensions 3); replaced 0; "
+                    + "unchanged 0; refused 1"), imported.log());
             assertTrue(imported.log().contains("warning: dataset import: refused config 3.0.0.Final: extractor "
                     + "bytecode/1 is not validated"), imported.log());
 
@@ -60,14 +61,14 @@ class DatasetCommandTest {
                     dataset.toString(), "--compare-work");
             assertEquals(0, verified.exitCode(), verified.out());
             assertTrue(verified.out().contains("compared with " + snapshots.root() + ": bom 3 (0 different) config 2 "
-                    + "(0 different) extensions 2 (0 different)"), verified.out());
+                    + "(0 different) extensions 3 (0 different)"), verified.out());
             assertTrue(verified.out().endsWith("dataset verify: OK\n"), verified.out());
 
             Path exported = dir.resolve("exported");
             Run export = run("dataset", "export", "--offline", "--work", work.toString(), "--dataset",
                     dataset.toString(), "--out", exported.toString());
             assertEquals(0, export.exitCode(), export.log());
-            assertTrue(export.log().contains("dataset export: 7 files written, 0 unchanged, 0 kept"), export.log());
+            assertTrue(export.log().contains("dataset export: 8 files written, 0 unchanged, 0 kept"), export.log());
             for (String release : List.of("3.0.0.Final", "3.1.0", "3.2.0")) {
                 for (String file : List.of(SnapshotStore.BOM, SnapshotStore.CONFIG, SnapshotStore.EXTENSIONS)) {
                     Path written = exported.resolve(release).resolve(file);
@@ -83,7 +84,7 @@ class DatasetCommandTest {
             Run again = run("dataset", "export", "--offline", "--work", work.toString(), "--dataset",
                     dataset.toString());
             assertEquals(0, again.exitCode(), again.log());
-            assertTrue(again.log().contains("0 files written, 7 unchanged, 0 kept"), again.log());
+            assertTrue(again.log().contains("0 files written, 8 unchanged, 0 kept"), again.log());
         }
     }
 
@@ -147,7 +148,8 @@ class DatasetCommandTest {
                     "--site", site.toString(), "--include-work");
             assertEquals(0, withWork.exitCode(), withWork.log());
             assertEquals(List.of("3.0.0.Final", "3.1.0", "3.2.0"), published(site));
-            assertTrue(withWork.log().contains("--include-work used 1 BOM and 2 config snapshots"), withWork.log());
+            assertTrue(withWork.log().contains("--include-work used 1 BOM, 2 config and 2 extensions snapshots"),
+                    withWork.log());
 
             Run noDataset = run("assemble", "--offline", "--work", work.toString(), "--dataset",
                     dir.resolve("missing").toString(), "--site", site.toString());
@@ -167,12 +169,13 @@ class DatasetCommandTest {
             Run all = run("all", "--offline", "--work", work.toString(), "--dataset", dataset.toString(), "--site",
                     site.toString());
             assertEquals(0, all.exitCode(), all.log());
-            assertTrue(all.log().contains("dataset import: added 7 (bom 3, config 2, extensions 2)"), all.log());
+            assertTrue(all.log().contains("dataset import: added 8 (bom 3, config 2, extensions 3)"), all.log());
             assertTrue(all.log().contains("dataset: 4 known releases (1 new: 2.16.12.Final, 0 dropped, 0 dated from "
                     + "the HTTP cache)"), all.log());
             assertEquals(List.of("3.0.0.Final", "3.1.0", "3.2.0"), published(site));
             JsonNode versions = Json.readTree(Files.readAllBytes(site.resolve("data/versions.json")));
             assertFalse(versions.at("/versions/0/config").asBoolean(), "the bytecode/1 config stays out");
+            assertTrue(versions.at("/versions/0/ext").asBoolean(), "its extensions are published without it");
             assertEquals(0, run("dataset", "verify", "--offline", "--dataset", dataset.toString()).exitCode());
 
             // a second run finds everything in the dataset

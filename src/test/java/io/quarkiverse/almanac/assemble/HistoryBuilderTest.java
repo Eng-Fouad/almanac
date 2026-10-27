@@ -83,20 +83,68 @@ class HistoryBuilderTest {
     private static final HistoryBuilder.Release PRE_RELEASE = new HistoryBuilder.Release(bom("3.3.0.CR1", "2023-08-16",
             dep("io.quarkus:quarkus-core", "3.3.0.CR1"), dep("io.vertx:vertx-core", "4.4.4")), null, null);
 
+    /// A release before the others with an extensions snapshot (from its extension catalog) but no config snapshot.
+    private static final HistoryBuilder.Release EXTENSIONS_ONLY = new HistoryBuilder.Release(bom("2.16.12.Final",
+            "2023-10-16", dep("io.quarkus:quarkus-core", "2.16.12.Final"), dep("io.vertx:vertx-core", "4.3.7")), null,
+            extensions("2.16.12.Final",
+                    extension("quarkus-agroal", "Agroal", List.of("quarkus.datasource"), null),
+                    new ExtensionInfo("quarkus-resteasy-reactive", "RESTEasy Reactive", null, "preview",
+                            List.of("data"), null, false, List.of(), null)));
+
     @Test
     void versionsListEveryReleaseWithItsFlags() throws IOException {
         HistoryBuilder.SiteData data = build();
         assertEquals("2026-10-27T12:00:00Z", data.versions().get("generatedAt").asText());
         assertEquals(json("[\"3.2\",\"3.8\",\"3.15\",\"3.20\",\"3.27\",\"3.33\",\"3.40\"]"), data.versions().get("lts"));
         assertEquals(json("""
-                [{"v":"3.0.0.Final","date":"2023-04-26","stream":"3.0","pre":false,"lts":false,"config":false},
+                [{"v":"3.0.0.Final","date":"2023-04-26","stream":"3.0","pre":false,"lts":false,"config":false,
+                  "ext":false},
                  {"v":"3.2.0.Final","date":"2023-07-05","stream":"3.2","pre":false,"lts":true,"config":true,
-                  "configSource":"bytecode"},
+                  "configSource":"bytecode","ext":true},
                  {"v":"3.3.0","date":"2023-08-23","stream":"3.3","pre":false,"lts":false,"config":true,
-                  "configSource":"model"},
+                  "configSource":"model","ext":true},
                  {"v":"4.0.0.Beta1","date":"2026-10-19","stream":"4.0","pre":true,"lts":false,"config":true,
-                  "configSource":"model"}]
+                  "configSource":"model","ext":true}]
                 """), data.versions().get("versions"));
+        // the flags in a fixed order, ext last
+        assertEquals("{\"v\":\"3.2.0.Final\",\"date\":\"2023-07-05\",\"stream\":\"3.2\",\"pre\":false,\"lts\":true,"
+                + "\"config\":true,\"configSource\":\"bytecode\",\"ext\":true}", data.versions().get("versions").get(1)
+                .toString());
+    }
+
+    @Test
+    void releasesWithExtensionsButNoConfigAreExtensionVersionsOnly() throws IOException {
+        HistoryBuilder builder = new HistoryBuilder();
+        builder.add(EXTENSIONS_ONLY);
+        RELEASES.forEach(builder::add);
+        HistoryBuilder.SiteData data = builder.build(NOW);
+
+        assertEquals(json("""
+                {"v":"2.16.12.Final","date":"2023-10-16","stream":"2.16","pre":false,"lts":false,"config":false,
+                 "ext":true}
+                """), data.versions().get("versions").get(0));
+        assertEquals(json("[2,3,4]"), data.config().get("versions"), "no config version");
+        assertEquals(json("""
+                [{"n":"Agroal","s":"stable","c":["data"],"p":["quarkus.datasource"]},
+                 {"n":"RESTEasy Reactive","s":"preview","c":["data"]},
+                 {"n":"RESTEasy Reactive","s":"stable","c":["data"]},
+                 {"n":"REST","s":"stable","c":["data"]},
+                 {"r":"io.quarkus:quarkus-rest"}]
+                """), data.extensions().get("states"));
+        // 3.0.0.Final has no extensions snapshot: no change point, nothing removed there
+        assertEquals(json("""
+                [{"id":"quarkus-agroal","h":[[0,0]]},
+                 {"id":"quarkus-rest","h":[[3,3]]},
+                 {"id":"quarkus-resteasy-reactive","h":[[0,1],[2,2],[3,4]]}]
+                """), data.extensions().get("exts"));
+    }
+
+    @Test
+    void aConfigSnapshotNeedsItsExtensions() {
+        BomSnapshot bom = RELEASES.get(1).bom();
+        ConfigSnapshot config = RELEASES.get(1).config();
+        assertThrows(IllegalArgumentException.class, () -> new HistoryBuilder.Release(bom, config, null));
+        assertFalse(new HistoryBuilder.Release(bom, null, RELEASES.get(1).extensions()).hasConfig());
     }
 
     @Test
@@ -159,7 +207,7 @@ class HistoryBuilderTest {
         HistoryBuilder.SiteData data = builder.build(NOW);
 
         assertEquals(json("""
-                {"v":"3.3.0.CR1","date":"2023-08-16","stream":"3.3","pre":true,"lts":false,"config":false}
+                {"v":"3.3.0.CR1","date":"2023-08-16","stream":"3.3","pre":true,"lts":false,"config":false,"ext":false}
                 """), data.versions().get("versions").get(2));
         assertEquals(5, data.versions().get("versions").size());
         assertEquals(json("""
@@ -234,6 +282,35 @@ class HistoryBuilderTest {
         }
     }
 
+    @Test
+    void assemblePublishesExtensionsWithoutConfigAndNoConfigWithoutExtensions() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            SnapshotStore store = writeSnapshots(dir, EXTENSIONS_ONLY, PRE_RELEASE);
+            // a config.json without its extensions.json is ignored
+            store.write("3.3.0.CR1", SnapshotStore.CONFIG, config("3.3.0.CR1", "model",
+                    prop("quarkus.http.port", List.of(), "int", "8081", "RUN_TIME", null, null)));
+            Path data = dir.resolve("site/data");
+            List<QuarkusVersion> selected = new ArrayList<>(List.of(QuarkusVersion.parse("2.16.12.Final"),
+                    QuarkusVersion.parse("3.3.0.CR1")));
+            RELEASES.forEach(release -> selected.add(QuarkusVersion.parse(release.bom().version())));
+            HistoryBuilder.assemble(store, selected, data, NOW);
+
+            JsonNode versions = json(Files.readString(data.resolve("versions.json"))).get("versions");
+            assertEquals(List.of("2.16.12.Final", "3.0.0.Final", "3.2.0.Final", "3.3.0.CR1", "3.3.0", "4.0.0.Beta1"),
+                    publishedVersions(data));
+            assertTrue(versions.get(0).get("ext").asBoolean());
+            assertFalse(versions.get(0).get("config").asBoolean());
+            assertFalse(versions.get(3).get("config").asBoolean(), "config without extensions is left out");
+            assertFalse(versions.get(3).get("ext").asBoolean());
+            assertEquals(json("[2,4,5]"), json(Files.readString(data.resolve("config.json"))).get("versions"));
+            assertEquals(json("""
+                    [{"id":"quarkus-agroal","h":[[0,0]]},
+                     {"id":"quarkus-rest","h":[[4,3]]},
+                     {"id":"quarkus-resteasy-reactive","h":[[0,1],[2,2],[4,4]]}]
+                    """), json(Files.readString(data.resolve("extensions.json"))).get("exts"));
+        }
+    }
+
     private static void assembleInto(ScratchDir dir) throws IOException {
         SnapshotStore store = writeSnapshots(dir);
         Path data = dir.resolve("site/data");
@@ -259,6 +336,8 @@ class HistoryBuilderTest {
             store.write(version, SnapshotStore.BOM, release.bom());
             if (release.config() != null) {
                 store.write(version, SnapshotStore.CONFIG, release.config());
+            }
+            if (release.extensions() != null) {
                 store.write(version, SnapshotStore.EXTENSIONS, release.extensions());
             }
         }

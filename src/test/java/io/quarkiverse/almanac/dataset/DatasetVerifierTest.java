@@ -157,11 +157,31 @@ class DatasetVerifierTest {
             contents.remove("3.1.0", Kind.EXTENSIONS);
             contents.remove("3.2.0", Kind.BOM);
             Path datasetDir = dir.resolve("dataset");
-            for (Map.Entry<String, String> file : DatasetEncoder.encode(contents).entrySet()) {
-                AtomicFiles.writeString(datasetDir.resolve(file.getKey()), file.getValue());
-            }
+            writeFiles(datasetDir, contents);
             assertEquals(List.of("releases: 3.1.0 has config without extensions", "releases: 3.2.0 has config but no "
                     + "BOM"), DatasetVerifier.verify(datasetDir, null).problems());
+        }
+    }
+
+    @Test
+    void extensionsNeedNoConfigButTheBom() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            Contents contents = Samples.contents();
+            // extensions without config, as read from an extension catalog
+            contents.put("3.0.0.Final", Kind.EXTENSIONS, Samples.extensions("3.0.0.Final", Samples.RESTEASY_REACTIVE));
+            Path datasetDir = dir.resolve("dataset");
+            writeFiles(datasetDir, contents);
+            DatasetVerifier.Report report = DatasetVerifier.verify(datasetDir, null);
+            assertEquals(List.of(), report.problems());
+            assertTrue(report.summary().contains("5 known releases: 4 with bom, 2 with config, 3 with extensions"),
+                    report.summary().toString());
+            assertTrue(report.summary().stream().anyMatch(line -> line.startsWith("round trip: 8 of 8 files")),
+                    report.summary().toString());
+
+            contents.remove("3.0.0.Final", Kind.BOM);
+            writeFiles(datasetDir, contents);
+            assertEquals(List.of("releases: 3.0.0.Final has extensions but no BOM"),
+                    DatasetVerifier.verify(datasetDir, null).problems());
         }
     }
 
@@ -176,9 +196,13 @@ class DatasetVerifierTest {
 
     private static Path write(ScratchDir dir) throws IOException {
         Path datasetDir = dir.resolve("dataset");
-        for (Map.Entry<String, String> file : DatasetEncoder.encode(Samples.contents()).entrySet()) {
+        writeFiles(datasetDir, Samples.contents());
+        return datasetDir;
+    }
+
+    private static void writeFiles(Path datasetDir, Contents contents) throws IOException {
+        for (Map.Entry<String, String> file : DatasetEncoder.encode(contents).entrySet()) {
             AtomicFiles.writeString(datasetDir.resolve(file.getKey()), file.getValue());
         }
-        return datasetDir;
     }
 }

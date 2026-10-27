@@ -20,7 +20,8 @@ public interface ReleaseSource {
     /// Whether the release has a config snapshot; used only to warn about one without a BOM snapshot.
     boolean hasConfig(String version) throws IOException;
 
-    /// The snapshots of a release listed by [#bomVersions()]: its BOM, and its config and extensions when it has both.
+    /// The snapshots of a release listed by [#bomVersions()]: its BOM, its extensions when it has them, and its config
+    /// when it has config and extensions (config without extensions is ignored).
     HistoryBuilder.Release load(String version) throws IOException;
 
     /// The snapshots of a store (its work folder, then its dataset fallback, as [SnapshotStore#read] finds them).
@@ -40,15 +41,15 @@ public interface ReleaseSource {
             public HistoryBuilder.Release load(String version) throws IOException {
                 BomSnapshot bom = store.read(version, SnapshotStore.BOM, BomSnapshot.class);
                 boolean hasConfig = store.exists(version, SnapshotStore.CONFIG);
-                boolean hasExtensions = store.exists(version, SnapshotStore.EXTENSIONS);
-                if (hasConfig != hasExtensions) {
-                    Log.warn("assemble: %s has only one of config.json and extensions.json; its config is ignored",
-                            version);
-                }
-                if (!hasConfig || !hasExtensions) {
+                if (!store.exists(version, SnapshotStore.EXTENSIONS)) {
+                    if (hasConfig) {
+                        Log.warn("assemble: %s has config.json but no extensions.json; its config is ignored",
+                                version);
+                    }
                     return new HistoryBuilder.Release(bom, null, null);
                 }
-                return new HistoryBuilder.Release(bom, store.read(version, SnapshotStore.CONFIG, ConfigSnapshot.class),
+                return new HistoryBuilder.Release(bom,
+                        hasConfig ? store.read(version, SnapshotStore.CONFIG, ConfigSnapshot.class) : null,
                         store.read(version, SnapshotStore.EXTENSIONS, ExtensionsSnapshot.class));
             }
         };

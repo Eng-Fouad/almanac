@@ -29,8 +29,8 @@ import java.util.concurrent.Callable;
 @Command(name = "import", description = "Merge work snapshots (work/snapshots/<version>/bom.json, config.json, "
         + "extensions.json) into the dataset. Refuses inconsistent snapshots, unvalidated config (the bytecode/1 "
         + "extractor, or bytecode config of a release before 3.14 without all its doc annotations), config without "
-        + "extensions (or BOM), and, without --force, snapshots that differ from the dataset's; the others are "
-        + "imported.")
+        + "extensions, config or extensions without the BOM, and, without --force, snapshots that differ from the "
+        + "dataset's; the others are imported. Extensions need no config.")
 public final class DatasetImportCommand implements Callable<Integer> {
 
     @Mixin
