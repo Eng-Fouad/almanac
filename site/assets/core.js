@@ -191,9 +191,12 @@ export function compareLibVersions(a, b) {
 /**
  * `downgrade` if B < A, else `major` / `minor` / `patch` by the first differing leading numeric
  * part (any position after the second counts as patch), `other` when only qualifiers differ, `same` when equal.
+ * A version kept as written with a `${...}` reference (one that Maven does not resolve either) has no order:
+ * a change to or from it is `other`.
  */
 export function bomChangeKind(from, to) {
   if (from === to) return 'same';
+  if (String(from).includes('${') || String(to).includes('${')) return 'other';
   if (compareLibVersions(from, to) > 0) return 'downgrade';
   const a = parseLibVersion(from).nums;
   const b = parseLibVersion(to).nums;

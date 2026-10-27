@@ -762,6 +762,32 @@ describe('timelines', () => {
     const x = artifactHistory(bom, 'io.quarkus:quarkus-x', versions);
     assert.equal(x.ranges[1].kind, 'patch', '"=" resolves to 3.1.0 at the end of its range; 3.1.0 → 3.1.5 is a patch');
   });
+  test('a version kept as written (${...}) is no downgrade and no upgrade', () => {
+    // netty-tcnative in the published BOMs: 2.0.40.Final, ${tcnative.version} from 2.2.4.Final to 2.4.2.Final, then
+    // 2.0.46.Final; maven-artifact-transfer and apache-client in 2.6.0.CR1; el-impl in the early releases
+    assert.equal(bomChangeKind('2.0.40.Final', '${tcnative.version}'), 'other');
+    assert.equal(bomChangeKind('${tcnative.version}', '2.0.46.Final'), 'other');
+    assert.equal(bomChangeKind('${tcnative.version}', '${tcnative.version}'), 'same');
+    assert.equal(bomChangeKind('0.10.0', '${maven-artifact-transfer.version}'), 'other');
+    assert.equal(bomChangeKind('2.17.78', '${awssdk.version}'), 'other');
+    assert.equal(bomChangeKind('${el-impl.version}', '3.0.1-b08'), 'other');
+    const versions = V('2.2.3.Final', '2.2.4.Final', '2.4.2.Final', '2.5.0.Final');
+    const bom = {
+      artifacts: [
+        { id: 'io.netty:netty-tcnative', h: [[0, '2.0.40.Final'], [1, '${tcnative.version}'], [3, '2.0.46.Final']] },
+      ],
+    };
+    const h = artifactHistory(bom, 'io.netty:netty-tcnative', versions);
+    assert.deepEqual(h.ranges.map((r) => [r.from, r.to, r.raw, r.kind ?? null]), [
+      [0, 0, '2.0.40.Final', null],
+      [1, 2, '${tcnative.version}', 'other'],
+      [3, 3, '2.0.46.Final', 'other'],
+    ]);
+    const d = diffBom(bom, versions, 0, 1);
+    assert.deepEqual(d.rows.map((r) => [r.from, r.to, r.kind]), [['2.0.40.Final', '${tcnative.version}', 'other']]);
+    assert.equal(d.counts.downgrade, 0);
+    assert.equal(diffBom(bom, versions, 2, 3).counts.other, 1);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

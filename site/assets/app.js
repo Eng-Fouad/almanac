@@ -38,7 +38,8 @@ const KIND_TITLE = {
   default: 'The default value changed', type: 'The type changed (including list or map shape)', phase: 'The configuration phase changed',
   deprecated: 'Newly deprecated', undeprecated: 'No longer deprecated', enum: 'The accepted values changed',
   extension: 'Now attributed to another extension', major: 'Major version change', minor: 'Minor version change',
-  patch: 'Patch version change', other: 'Only the version qualifier changed', downgrade: 'The newer release manages an older version',
+  patch: 'Patch version change', other: 'Only the version qualifier changed, or a version kept as written (${...})',
+  downgrade: 'The newer release manages an older version',
 };
 const STATUS_TONE = { stable: 'neu', preview: 'chg', experimental: 'dep', deprecated: 'rem' };
 const TYPE_LABEL = { property: 'prop', artifact: 'dep', extension: 'ext' };
