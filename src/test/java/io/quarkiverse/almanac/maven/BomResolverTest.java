@@ -284,6 +284,45 @@ class BomResolverTest {
     }
 
     @Test
+    void failsOnAPropertyCycleThatNoManagedDependencyReadsAsMavenDoes() {
+        // Maven interpolates every property of the model: an unused cycle of the BOM, of a parent, of an active
+        // profile or of an imported BOM fails the build
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", properties("a=pre-${a}")))
+                .add("org.imp:i:1", project("org.imp:i:1", properties("p=${q}", "q=${p}"), managed(dep("g:y:2"))));
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", properties("a=${a}"), managed(dep("g:x:${unknown}"))),
+                "g:bom:1: the property references form a cycle: a -> a");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: a -> a");
+        failures.put(project("g:bom:1", managed(dep("g:x:1")), "<profiles>" + profile("on",
+                        "<property><name>!skip</name></property>", properties("a=x-${a}")) + "</profiles>"),
+                "g:bom:1: the property references form a cycle: a -> a");
+        // as on a machine that does not activate the profile
+        failures.put(project("g:bom:1", properties("a=${a}"), managed(dep("g:x:1")),
+                        "<profiles>" + profile("jdk11", "<jdk>[11,)</jdk>", properties("a=1")) + "</profiles>"),
+                "g:bom:1: the property references form a cycle: a -> a");
+        failures.put(project("g:bom:1", managed(dep("g:x:${unknown}"), bomImport("org.imp:i:1"))),
+                "org.imp:i:1: the property references form a cycle: q -> p -> q");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void aValueThatHoldsTheReferenceItselfIsPassedOverAsMavenDoes() throws IOException {
+        // the next value is the model's version here, and one that Maven may find in the model or on the machine for
+        // name and java.home; a cycle that the child overrides, or one in a profile that a plain build does not apply,
+        // is no cycle either
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("a=pre-${a}")));
+        String bom = project(":bom:", parent("g:parent:1"),
+                properties("a=plain", "version=x-${version}", "name=${name}", "java.home=${java.home}",
+                        "v2=${project.version}"),
+                managed(dep("g:v:${version}"), dep("g:w:${v2}")),
+                "<profiles>" + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>");
+        assertEquals(Map.of("g:v", "1", "g:w", "1"), versions(resolve(repo, bom)));
+    }
+
+    @Test
     void ownAndInheritedEntriesBeatImportsAndEarlierImportsBeatLaterOnes() throws IOException {
         Repo repo = new Repo()
                 .add("org.acme:parent:1", project("org.acme:parent:1",

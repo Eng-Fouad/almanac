@@ -346,6 +346,11 @@ class BomSnapshotsTest {
                           <version>1.0.0.Final</version><properties><a>${b}</a><b>${a}</b></properties>
                           <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId>
                           <version>${a}</version></dependency></dependencies></dependencyManagement></project>""",
+                "a property reference cycle that no managed dependency reads", """
+                        <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><properties><a>pre-${a}</a></properties>
+                          <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId>
+                          <version>${unknown}</version></dependency></dependencies></dependencyManagement></project>""",
                 "a managed groupId that keeps a reference", managedBom("""
                         <dependency><groupId>${unknown.group}</groupId><artifactId>art</artifactId>
                           <version>1.0</version></dependency>"""),

@@ -16,9 +16,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Supplier;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -38,7 +40,8 @@ import java.util.regex.Pattern;
 /// 3. **Interpolation** of the merged model, so inherited entries see the child's values: `${project.groupId}`,
 ///    `${project.artifactId}`, `${project.version}`, `${project.packaging}` and `${project.parent.groupId}`,
 ///    `${project.parent.artifactId}`, `${project.parent.version}` (also with the legacy `pom.` prefix, or unprefixed
-///    after the properties), then the properties, resolved recursively. An unknown reference stays as written.
+///    after the properties), then the properties, resolved recursively; like Maven, a value that holds the reference
+///    itself is passed over for the next one. An unknown reference stays as written.
 /// 4. **Imports.** The `<type>pom</type><scope>import</scope>` entries, in declaration order (a pom's own before its
 ///    parents'), are replaced by the effective dependency management of the imported BOM, built the same way in the
 ///    imported BOM's own context, for the keys not managed yet: a pom's own and inherited entries beat imported ones,
@@ -48,7 +51,8 @@ import java.util.regex.Pattern;
 /// first of the merged-in ones; a pom with neither parent entries nor imports keeps its list as written, and of
 /// entries with the same id the first counts.
 ///
-/// Where Maven fails to build the model, so does the resolution: parent, import and property reference cycles, and a
+/// Where Maven fails to build the model, so does the resolution: parent, import and property reference cycles (also a
+/// property cycle that no managed dependency reads, since Maven interpolates every property of the model), and a
 /// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
 /// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
 /// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
@@ -316,8 +320,8 @@ public final class BomResolver {
             putIfNotNull(modelValues, "parent.artifactId", pom.parent().artifactId());
             putIfNotNull(modelValues, "parent.version", pom.parent().version());
         }
-        Interpolator interpolator = new Interpolator(groupId + ":" + pom.artifactId() + ":" + version, modelValues,
-                properties);
+        String owner = groupId + ":" + pom.artifactId() + ":" + version;
+        Interpolator interpolator = new Interpolator(owner, modelValues, properties, pom.parent() != null);
         String coordinates = interpolator.apply(groupId) + ":" + interpolator.apply(pom.artifactId()) + ":"
                 + interpolator.apply(version);
 
@@ -353,6 +357,11 @@ public final class BomResolver {
                 entry = entry.doubting(doubt(entry, coordinates, pom.parent() != null, machineProfiles));
             }
             managed.add(entry);
+        }
+        // Maven interpolates every property of the model: a cycle fails also where no managed dependency reads it
+        Interpolator everyProperty = new Interpolator(owner, modelValues, properties, pom.parent() != null);
+        for (String property : new TreeSet<>(properties.keySet())) {
+            everyProperty.apply(properties.get(property));
         }
 
         List<String> profiles = new ArrayList<>();
@@ -707,8 +716,11 @@ public final class BomResolver {
     }
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or
-    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. An
-    /// unknown reference stays as written; a reference cycle fails.
+    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Like
+    /// Maven, it passes over a value that holds the reference itself for the next one. An unknown reference stays as
+    /// written; a reference cycle fails, and so does a reference whose only values hold it, unless Maven may find
+    /// another value in the model or on the machine ([Elsewhere]). A profile that only some machines activate is not
+    /// applied, as everywhere in the resolution.
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");
@@ -716,12 +728,15 @@ public final class BomResolver {
         private final String owner;
         private final Map<String, String> modelValues;
         private final Map<String, String> properties;
+        private final boolean parent;
         private final Set<String> read = new HashSet<>();
 
-        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties) {
+        /// @param parent whether the model has a parent
+        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties, boolean parent) {
             this.owner = owner;
             this.modelValues = modelValues;
             this.properties = properties;
+            this.parent = parent;
         }
 
         String apply(String value) throws IOException {
@@ -752,30 +767,43 @@ public final class BomResolver {
             String name = expression.startsWith(".") ? expression.substring(1) : expression;
             String key = unprefixed(name);
             if (resolving.contains(key)) {
-                throw new IOException(owner + ": the property references form a cycle: "
-                        + String.join(" -> ", resolving) + " -> " + key);
+                throw cycle(resolving, key);
             }
-            String value = valueOf(name);
-            if (value == null) {
-                return null;
-            }
-            resolving.add(key);
-            try {
-                return interpolate(value, resolving);
-            } finally {
-                resolving.removeLast();
-            }
-        }
-
-        private String valueOf(String name) {
-            for (String prefix : PREFIXES) {
-                if (name.startsWith(prefix) && modelValues.containsKey(name.substring(prefix.length()))) {
-                    return modelValues.get(name.substring(prefix.length()));
+            // the values the resolution knows, in Maven's order: the model value of a prefixed name, the property, the
+            // model value of an unprefixed name
+            List<Supplier<String>> sources = List.of(() -> key.equals(name) ? null : modelValues.get(key),
+                    () -> property(name), () -> modelValues.get(name));
+            String itself = "${" + expression + "}";
+            boolean passedOver = false;
+            for (Supplier<String> source : sources) {
+                String value = source.get();
+                if (value != null && value.contains(itself)) {
+                    passedOver = true;
+                } else if (value != null) {
+                    resolving.add(key);
+                    try {
+                        return interpolate(value, resolving);
+                    } finally {
+                        resolving.removeLast();
+                    }
                 }
             }
+            if (passedOver && elsewhere(name, parent, Set.of()) == null) {
+                List<String> path = new ArrayList<>(resolving);
+                path.add(key);
+                throw cycle(path, key);
+            }
+            return null;
+        }
+
+        private String property(String name) {
             read.add(name);
-            String property = properties.get(name);
-            return property != null ? property : modelValues.get(name);
+            return properties.get(name);
+        }
+
+        private IOException cycle(List<String> path, String key) {
+            return new IOException(owner + ": the property references form a cycle: " + String.join(" -> ", path)
+                    + " -> " + key);
         }
 
         private static String unprefixed(String name) {
