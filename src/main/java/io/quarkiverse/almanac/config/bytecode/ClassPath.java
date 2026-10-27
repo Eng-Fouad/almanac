@@ -2,6 +2,7 @@ package io.quarkiverse.almanac.config.bytecode;
 
 import io.quarkiverse.almanac.config.JarSource;
 import io.quarkiverse.almanac.config.VersionJars;
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.util.Log;
 
 import java.io.IOException;
@@ -140,6 +141,10 @@ final class ClassPath {
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof UncheckedIOException unchecked) {
+                if (unchecked.getCause() instanceof Http.StoppedException stopped) {
+                    // keeps its type: no reader takes a refused request for a missing class
+                    throw stopped;
+                }
                 throw new IOException("cannot load " + key + ": " + unchecked.getCause().getMessage(),
                         unchecked.getCause());
             }

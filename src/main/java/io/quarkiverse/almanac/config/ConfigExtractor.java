@@ -3,6 +3,7 @@ package io.quarkiverse.almanac.config;
 import io.quarkiverse.almanac.config.bytecode.BytecodeConfigReader;
 import io.quarkiverse.almanac.config.sourcedoc.SourceDocAnnotations;
 import io.quarkiverse.almanac.extensions.ExtensionMetadataReader;
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.MavenRepo;
 import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
@@ -13,12 +14,14 @@ import io.quarkiverse.almanac.util.SnapshotStore;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /// Writes the config and extension snapshots of a release: `config.json` from the selected reader,
 /// `config-model.json` / `config-bytecode.json` additionally for [Source#BOTH], and `extensions.json`. A snapshot
 /// without properties is never written (it would read as "everything removed"), and nothing is written for a release
 /// whose config or extension metadata cannot be read completely: every snapshot is computed before the first one is
-/// written.
+/// written. Nothing is written either while the repository's requests are stopped ([Http#stopped()]): a reader may
+/// have taken a refused request (or the 403 that stopped them) for a missing jar, class or source file.
 public final class ConfigExtractor {
 
     /// Which reader produces `config.json`.
@@ -66,12 +69,15 @@ public final class ConfigExtractor {
     /// Extracts one release unless its snapshots exist already (and `force` is false).
     ///
     /// @return false when no properties were found, so nothing was written
+    /// @throws Http.StoppedException when the repository's requests stopped before or while the release was read;
+    ///                               nothing was written then
     public boolean extract(BomSnapshot bom, Source source, boolean force) throws IOException {
         String version = bom.version();
         if (!force && upToDate(version, source)) {
             Log.info("config %s: reusing existing snapshots", version);
             return true;
         }
+        failIfStopped(version);
         long start = System.nanoTime();
         VersionJars jars = VersionJars.of(bom, repo);
         jars.index();
@@ -98,6 +104,7 @@ public final class ConfigExtractor {
         // read everything before writing anything: a release whose extension metadata cannot be read (e.g. offline
         // without the cached jar) must not leave a config.json without its extensions.json
         ExtensionsSnapshot extensions = extensionReader.read(jars);
+        failIfStopped(version);
         for (Map.Entry<String, ConfigSnapshot> sideFile : sideFiles.entrySet()) {
             writeIfNotEmpty(sideFile.getValue(), sideFile.getKey());
         }
@@ -136,6 +143,15 @@ public final class ConfigExtractor {
         ConfigSnapshot model = modelReader.read(jars);
         sideFiles.put(SnapshotStore.CONFIG_MODEL, model);
         return model;
+    }
+
+    /// Fails while the repository's requests are stopped: what the readers got may lack what a refused request held.
+    private void failIfStopped(String version) throws Http.StoppedException {
+        Optional<String> reason = repo.http().stopReason();
+        if (reason.isPresent()) {
+            throw new Http.StoppedException("requests stopped after " + reason.get() + ", so no snapshot of "
+                    + version + " is written");
+        }
     }
 
     private void writeIfNotEmpty(ConfigSnapshot snapshot, String file) throws IOException {

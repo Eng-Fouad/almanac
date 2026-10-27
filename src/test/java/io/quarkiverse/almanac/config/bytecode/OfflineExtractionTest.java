@@ -1,9 +1,11 @@
 package io.quarkiverse.almanac.config.bytecode;
 
+import com.sun.net.httpserver.HttpServer;
 import io.quarkiverse.almanac.ScratchDir;
 import io.quarkiverse.almanac.config.ConfigExtractor;
 import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.MavenRepo;
+import io.quarkiverse.almanac.maven.Pacer;
 import io.quarkiverse.almanac.maven.RemoteJar;
 import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigProperty;
@@ -18,6 +20,9 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +32,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -38,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// The extractor with the bytecode reader on an offline repository whose cache holds a fixture release, as
 /// `config --offline` runs it: the `@ConfigDoc*` annotations of releases before 3.14 come from cached `-sources` jars
 /// (the real [io.quarkiverse.almanac.config.sourcedoc.SourceDocAnnotations]), and a release that cannot be read completely leaves
-/// no snapshot behind.
+/// no snapshot behind, nor does one read while a local repository refuses the requests.
 class OfflineExtractionTest {
 
     private static final String ACME = "io.quarkus.acme.AcmeConfig";
@@ -84,6 +90,28 @@ class OfflineExtractionTest {
                 @ConfigDocMapKey("label") Map<String, String> labels();
             }
             """;
+    private static final String TLS = "io.quarkus.tls.TlsConfig";
+    private static final String TLS_SOURCE = """
+            package io.quarkus.tls;
+
+            import io.quarkus.runtime.annotations.*;
+            import io.smallrye.config.*;
+            import java.util.*;
+
+            @ConfigMapping(prefix = "quarkus.tls")
+            @ConfigRoot(phase = ConfigPhase.RUN_TIME)
+            public interface TlsConfig {
+                /** Client authentication. */
+                Optional<io.vertx.core.http.ClientAuth> clientAuth();
+            }
+            """;
+    /// A third-party enum: compiled for the config class above, in no jar of the cache.
+    private static final String CLIENT_AUTH = "io.vertx.core.http.ClientAuth";
+    private static final String CLIENT_AUTH_SOURCE = """
+            package io.vertx.core.http;
+
+            public enum ClientAuth { NONE, REQUEST, REQUIRED }
+            """;
     private static final String EXTENSION_YAML = "META-INF/quarkus-extension.yaml";
 
     private static Map<String, byte[]> classes;
@@ -92,7 +120,8 @@ class OfflineExtractionTest {
 
     @BeforeAll
     static void compile() {
-        classes = JavaSources.withConfigAnnotations(false).add(ACME, ACME_SOURCE).add(OTHER, OTHER_SOURCE).compile();
+        classes = JavaSources.withConfigAnnotations(false).add(ACME, ACME_SOURCE).add(OTHER, OTHER_SOURCE)
+                .add(TLS, TLS_SOURCE).add(CLIENT_AUTH, CLIENT_AUTH_SOURCE).compile();
     }
 
     @BeforeEach
@@ -235,6 +264,49 @@ class OfflineExtractionTest {
             assertTrue(e.getMessage().contains("offline"), e.getMessage());
             for (String file : List.of(SnapshotStore.CONFIG, SnapshotStore.CONFIG_BYTECODE, SnapshotStore.EXTENSIONS)) {
                 assertFalse(store().exists("3.99.0", file), source + " wrote " + file);
+            }
+        }
+    }
+
+    @Test
+    void writesNothingWhenRequestsStopWhileTheReleaseIsRead() throws IOException {
+        cacheJar("quarkus-tls", "3.99.0", null, binaryJar(TLS, "io/quarkus/tls/TlsConfig"));
+        cacheJar("quarkus-acme", "3.99.1", null, acmeJar());
+        List<String> requested = new CopyOnWriteArrayList<>();
+        HttpServer refusing = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        refusing.createContext("/", exchange -> {
+            requested.add(exchange.getRequestURI().getPath());
+            exchange.sendResponseHeaders(403, -1);
+            exchange.close();
+        });
+        refusing.start();
+        try (Http http = new Http(1, false, Pacer.none())) {
+            URI base = URI.create("http://" + refusing.getAddress().getHostString() + ":"
+                    + refusing.getAddress().getPort() + "/maven2/");
+            ConfigExtractor extractor = new ConfigExtractor(
+                    new MavenRepo(base, dir.resolve("cache"), http, RemoteJar.Options.DEFAULT), store(),
+                    ConfigExtractor.DocAnnotationMode.SOURCES);
+            // the enum of a config member is in a third-party jar: the reader takes the 403 for an unreadable jar,
+            // which would be a mere warning
+            BomSnapshot tls = new BomSnapshot("3.99.0", "2026-01-01", List.of(
+                    new ManagedDep("io.quarkus:quarkus-tls", "3.99.0"),
+                    new ManagedDep("io.vertx:vertx-core", "4.5.1")));
+            Http.StoppedException stopped = assertThrows(Http.StoppedException.class,
+                    () -> extractor.extract(tls, ConfigExtractor.Source.BYTECODE, true));
+            assertTrue(stopped.getMessage().contains("HTTP 403 for " + base
+                    + "io/vertx/vertx-core/4.5.1/vertx-core-4.5.1.jar"), stopped.getMessage());
+            assertEquals(List.of("/maven2/io/vertx/vertx-core/4.5.1/vertx-core-4.5.1.jar"), requested);
+
+            // once requests stopped, not even a release the cache holds whole is written
+            assertThrows(Http.StoppedException.class, () -> extractor.extract(bom("3.99.1", "quarkus-acme"),
+                    ConfigExtractor.Source.BYTECODE, true));
+            assertEquals(1, requested.size());
+        } finally {
+            refusing.stop(0);
+        }
+        for (String version : List.of("3.99.0", "3.99.1")) {
+            for (String file : List.of(SnapshotStore.CONFIG, SnapshotStore.EXTENSIONS)) {
+                assertFalse(store().exists(version, file), version + ": " + file + " written");
             }
         }
     }

@@ -3,6 +3,7 @@ package io.quarkiverse.almanac.config.bytecode;
 import io.quarkiverse.almanac.config.VersionJars;
 import io.quarkiverse.almanac.config.sourcedoc.DocAnnotationSource;
 import io.quarkiverse.almanac.config.sourcedoc.DocAnnotations;
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.model.ConfigProperty;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
 import org.junit.jupiter.api.BeforeAll;
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Releases before 3.14: `@ConfigDocMapKey`, `@ConfigDocDefault`, `@ConfigDocIgnore` and `@ConfigDocSection` have
@@ -202,6 +204,16 @@ class DocAnnotationSourceTest {
         assertEquals(warnings.getFirst(), snapshot.warnings().getFirst());
         assertTrue(warnings.getFirst().contains("io.quarkus.old.OldLegacyConfig"), warnings.getFirst());
         assertTrue(warnings.getFirst().contains("sources jar unreadable"), warnings.getFirst());
+    }
+
+    @Test
+    void aRefusedLookupEndsTheReadInsteadOfBecomingAWarning() {
+        DocAnnotationSource refused = (owner, member) -> {
+            throw new Http.StoppedException("not requesting " + owner + ".java: requests stopped after HTTP 403");
+        };
+        Http.StoppedException stopped = assertThrows(Http.StoppedException.class,
+                () -> read(new BytecodeConfigReader(jars -> refused), "3.8.6", sourceRetained));
+        assertTrue(stopped.getMessage().contains("requests stopped after HTTP 403"), stopped.getMessage());
     }
 
     @Test

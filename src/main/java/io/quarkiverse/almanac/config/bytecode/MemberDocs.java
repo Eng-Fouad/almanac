@@ -2,6 +2,7 @@ package io.quarkiverse.almanac.config.bytecode;
 
 import io.quarkiverse.almanac.config.sourcedoc.DocAnnotationSource;
 import io.quarkiverse.almanac.config.sourcedoc.DocAnnotations;
+import io.quarkiverse.almanac.maven.Http;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -14,7 +15,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 /// The `@ConfigDoc*` annotations that pre-3.14 class files lack, looked up once per member from a [DocAnnotationSource]
 ///. A member whose lookup fails counts as having none. The failures
 /// become one warning per declaring type, or a single warning when every lookup failed (typically offline without
-/// the cached `-sources` jars), in which case the result equals a read of the class files only. Thread-safe.
+/// the cached `-sources` jars), in which case the result equals a read of the class files only. A lookup refused
+/// because requests stopped ([Http.StoppedException]) is no such failure: it ends the read. Thread-safe.
 final class MemberDocs {
 
     /// Knows no annotations, never consults a source.
@@ -52,7 +54,9 @@ final class MemberDocs {
     /// @param ownerInternalName internal name of the declaring type
     /// @param member            field or method name
     /// @return never null
-    DocAnnotations get(String ownerInternalName, String member) {
+    /// @throws Http.StoppedException when requests stopped: the lookup was refused, so the release cannot be read
+    ///                               completely
+    DocAnnotations get(String ownerInternalName, String member) throws Http.StoppedException {
         if (!active()) {
             return DocAnnotations.NONE;
         }
@@ -65,6 +69,8 @@ final class MemberDocs {
         DocAnnotations found;
         try {
             found = source.get(ownerInternalName, member);
+        } catch (Http.StoppedException e) {
+            throw e;
         } catch (IOException | RuntimeException e) {
             failures.putIfAbsent(ownerInternalName, e.toString());
             found = null;

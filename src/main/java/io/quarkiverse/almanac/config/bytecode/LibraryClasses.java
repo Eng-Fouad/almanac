@@ -1,6 +1,7 @@
 package io.quarkiverse.almanac.config.bytecode;
 
 import io.quarkiverse.almanac.config.JarSource;
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.util.Log;
 
 import java.io.IOException;
@@ -52,11 +53,12 @@ final class LibraryClasses {
     }
 
     /// Looks for a class in the candidate jars. A candidate that cannot be read is skipped and reported by
-    /// [#warnings()].
+    /// [#warnings()]; one whose request was refused because requests stopped ends the search.
     ///
     /// @param internalName e.g. `io/vertx/core/http/ClientAuth`
     /// @return the class file and its jar; empty when no candidate has it
-    Optional<Found> find(String internalName) {
+    /// @throws Http.StoppedException when requests stopped, so that the class is unknown rather than missing
+    Optional<Found> find(String internalName) throws Http.StoppedException {
         String entry = internalName + ".class";
         int probed = 0;
         for (JarSource jar : candidates(internalName)) {
@@ -72,6 +74,8 @@ final class LibraryClasses {
                         return Optional.of(new Found(jar, bytes.get()));
                     }
                 }
+            } catch (Http.StoppedException e) {
+                throw e;
             } catch (IOException e) {
                 unreadable.putIfAbsent(coordinates(jar) + ":" + jar.version(), e.toString());
             }
