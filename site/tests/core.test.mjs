@@ -1345,6 +1345,107 @@ describe('extension snapshots without config', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+describe('extension snapshots without config: edge cases', () => {
+  const rows = (...xs) => xs.map(([v, flags = '']) => ({
+    v, stream: stream(v), pre: !isFinal(v), lts: false, config: flags.includes('c'), ext: flags.includes('e'),
+  }));
+  const events = (h, list) => h.events.map((e) => [list[e.vi].v, e.type, ...(e.kinds ?? [])]);
+
+  test('the first release of the site has extensions only', () => {
+    const list = rows(['2.15.0.Final'], ['2.16.0.Final'], ['2.16.12.Final', 'e'], ['3.0.0.Final'], ['3.0.4.Final', 'ce']);
+    assert.deepEqual(extensionVersionsOf(list), [2, 4]);
+    assert.equal(extensionVersionFor(2, list), 2);
+    assert.equal(configVersionFor(2, list), null, 'no config snapshot at or before it');
+    assert.equal(extensionVersionFor(1, list), 2, 'an earlier patch uses its stream\'s snapshot');
+    assert.equal(extensionVersionFor(0, list), null, 'a release before the first snapshot has none');
+    assert.equal(extensionVersionFor(3, list), 4);
+    const extensions = {
+      states: [{ n: 'Old', s: 'preview' }, { n: 'Old', s: 'stable' }, { n: 'New', s: 'experimental' }],
+      exts: [
+        { id: 'quarkus-gone', h: [[2, 0], [4, null]] },
+        { id: 'quarkus-new', h: [[4, 2]] },
+        { id: 'quarkus-old', h: [[2, 0], [4, 1]] },
+      ],
+    };
+    const evs = extensionVersionsOf(list);
+    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-old', evs), list),
+      [['2.16.12.Final', 'present'], ['3.0.4.Final', 'changed', 'status']]);
+    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-gone', evs), list),
+      [['2.16.12.Final', 'present'], ['3.0.4.Final', 'removed']]);
+    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-new', evs), list), [['3.0.4.Final', 'introduced']]);
+    const d = diffExtensions(extensions, extensionVersionFor(1, list), extensionVersionFor(3, list));
+    assert.deepEqual([d.added.map((x) => x.id), d.removed.map((x) => x.id), d.changed.map((x) => [x.id, x.kinds])],
+      [['quarkus-new'], ['quarkus-gone'], [['quarkus-old', ['status']]]]);
+    const index = buildSearchIndex({ config: { versions: [4], states: [], props: [] }, extensions, versions: list });
+    const current = (id) => index.entries.find((e) => e.id === id).current;
+    assert.deepEqual([current('quarkus-gone'), current('quarkus-new'), current('quarkus-old')], [false, true, true]);
+  });
+
+  test('a site without any config snapshot still has extension data', () => {
+    const list = rows(['2.15.3.Final', 'e'], ['2.16.0.CR1'], ['2.16.12.Final', 'e']);
+    const extensions = { states: [{ n: 'A' }], exts: [{ id: 'quarkus-a', h: [[0, 0]] }] };
+    assert.deepEqual(configVersionsOf(list), []);
+    assert.equal(configVersionFor(2, list), null);
+    assert.equal(extensionVersionFor(2, list), 2);
+    assert.equal(extensionVersionFor(1, list), null, 'a pre-release never borrows');
+    assert.deepEqual(events(extensionHistory(extensions, 'quarkus-a', extensionVersionsOf(list)), list), [['2.15.3.Final', 'present']]);
+    const index = buildSearchIndex({ config: { versions: [], states: [], props: [] }, extensions, versions: list });
+    assert.equal(index.entries.find((e) => e.id === 'quarkus-a').current, true);
+  });
+
+  test('a final whose stream has only a pre-release extension snapshot uses it; config falls back across streams', () => {
+    const list = rows(['3.0.4.Final', 'ce'], ['3.1.0.CR1', 'e'], ['3.1.0'], ['3.1.1']);
+    assert.equal(extensionVersionFor(2, list), 1);
+    assert.equal(extensionVersionFor(3, list), 1);
+    assert.equal(configVersionFor(2, list), 0);
+    assert.equal(configVersionFor(1, list), null, 'the pre-release has no config snapshot of its own');
+  });
+
+  test('hidden pre-releases with extension snapshots', () => {
+    // 3.1.0.CR1 is hidden while pre-releases are off (its stream has finals); 3.2.0.CR1 is upcoming
+    const list = rows(['3.0.4.Final', 'ce'], ['3.1.0.CR1', 'e'], ['3.1.0'], ['3.1.3', 'ce'], ['3.2.0.CR1', 'e']);
+    const off = releaseVisibility(list);
+    const on = releaseVisibility(list, { showPre: true });
+    const evs = extensionVersionsOf(list);
+    assert.deepEqual(evs, [0, 1, 3, 4]);
+    assert.deepEqual(visibleOnly(evs, off), [0, 3, 4]);
+    assert.equal(extensionVersionFor(1, list), 1, 'a hidden pre-release still compares at its own snapshot');
+    assert.equal(extensionVersionFor(2, list), 3, 'a final prefers a final snapshot of its stream');
+    assert.equal(extensionVersionFor(4, list), 4);
+    const extensions = {
+      states: [{ n: 'A', s: 'preview' }, { n: 'A', s: 'stable' }, { n: 'B' }, { n: 'C' }],
+      exts: [
+        { id: 'quarkus-a', h: [[0, 0], [1, 1]] },
+        { id: 'quarkus-b', h: [[1, 2], [3, null]] },
+        { id: 'quarkus-c', h: [[1, 3]] },
+        { id: 'quarkus-d', h: [[0, 0], [1, null], [3, 0]] },
+      ],
+    };
+    const hist = (id, vis) => extensionHistory(extensions, id, evs, { vis });
+    // a change at the hidden pre-release shows at the next visible snapshot
+    assert.deepEqual(events(hist('quarkus-a', off), list), [['3.0.4.Final', 'present'], ['3.1.3', 'changed', 'status']]);
+    assert.deepEqual(events(hist('quarkus-a', on), list), [['3.0.4.Final', 'present'], ['3.1.0.CR1', 'changed', 'status']]);
+    assert.equal(hist('quarkus-a', off).hiddenSnapshots, 1);
+    // only in the hidden pre-release: every snapshot is used instead
+    const b = hist('quarkus-b', off);
+    assert.equal(b.widened, true);
+    assert.deepEqual(events(b, list), [['3.1.0.CR1', 'introduced'], ['3.1.3', 'removed']]);
+    assert.equal(hist('quarkus-b', on).widened, false);
+    // introduced at the hidden pre-release: introduced at the first visible snapshot that has it
+    assert.deepEqual(events(hist('quarkus-c', off), list), [['3.1.3', 'introduced']]);
+    assert.deepEqual(events(hist('quarkus-c', on), list), [['3.1.0.CR1', 'introduced']]);
+    // missing only from the hidden pre-release: no removed / reintroduced pair while it is hidden
+    assert.deepEqual(events(hist('quarkus-d', off), list), [['3.0.4.Final', 'present']]);
+    assert.deepEqual(events(hist('quarkus-d', on), list),
+      [['3.0.4.Final', 'present'], ['3.1.0.CR1', 'removed'], ['3.1.3', 'reintroduced']]);
+    // the upcoming pre-release is the newest extension snapshot, so it decides what is current
+    const index = buildSearchIndex({ config: { versions: [0, 3], states: [], props: [] }, extensions, versions: list });
+    assert.equal(index.entries.find((e) => e.id === 'quarkus-b').current, false);
+    assert.equal(index.entries.find((e) => e.id === 'quarkus-c').current, true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 describe('durations: stream starts and phrasing', () => {
   const vj = load('versions');
   const list = vj.versions;

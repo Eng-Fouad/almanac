@@ -2182,7 +2182,8 @@ function extensionPanel(x, data, toggle) {
   row('Present in', h('span', { class: 'mono' }, presentInLabel(hist)), hist.present ? h('span', { class: 'muted' }, ' (current)') : null);
 
   let propsBlock = null;
-  if (data.config) {
+  // extension snapshots do not need config, so a dataset may have extensions and no config snapshot at all
+  if (data.config && data.config.raw.versions.length) {
     const cfg = data.config.raw;
     const shownCvs = core.visibleOnly(cfg.versions, vis);
     const latest = shownCvs.length ? shownCvs[shownCvs.length - 1] : cfg.versions[cfg.versions.length - 1];
