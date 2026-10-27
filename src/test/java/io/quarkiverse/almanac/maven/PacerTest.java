@@ -78,7 +78,7 @@ class PacerTest {
         assertTrue(Pause.parse("0").isNone());
         assertTrue(Pause.parse("0-0").isNone());
         assertFalse(Pause.parse("0-1").isNone());
-        assertEquals(Pause.DEFAULT, TWO_TO_FIVE);
+        assertEquals(new Pause(Duration.ofSeconds(1), Duration.ofSeconds(3)), Pause.DEFAULT);
         for (String text : List.of("2-5", "3", "0", "1.5-4.25", "0.001")) {
             assertEquals(text, Pause.parse(text).toString());
         }

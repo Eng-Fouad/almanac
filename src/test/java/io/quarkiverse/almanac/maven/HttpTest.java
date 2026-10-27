@@ -524,14 +524,14 @@ class HttpTest {
     }
 
     @Test
-    void mavenCentralNeedsAPauseOfAtLeastTwoSeconds() throws IOException {
+    void mavenCentralNeedsAPauseOfAtLeastOneSecond() throws IOException {
         URI central = URI.create("https://repo1.maven.org/maven2/");
-        for (String pause : List.of("0", "0-0.5", "0.5-2", "1", "1.999-5")) {
+        for (String pause : List.of("0", "0-0.5", "0.5-2", "0.999", "0.999-5")) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> Http.checkPause(Pacer.Pause.parse(pause), central));
-            assertTrue(refused.getMessage().contains("at least 2 s"), refused.getMessage());
+            assertTrue(refused.getMessage().contains("at least 1 s"), refused.getMessage());
         }
-        Http.checkPause(Pacer.Pause.parse("2"), central);
+        Http.checkPause(Pacer.Pause.parse("1"), central);
         Http.checkPause(Pacer.Pause.DEFAULT, URI.create("https://repo.maven.apache.org/maven2"));
         assertThrows(IllegalArgumentException.class,
                 () -> Http.checkPause(Pacer.Pause.NONE, URI.create("https://REPO.maven.apache.org/maven2/")));

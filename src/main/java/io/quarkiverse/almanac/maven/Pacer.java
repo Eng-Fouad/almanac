@@ -57,8 +57,8 @@ public final class Pacer {
     public record Pause(Duration min, Duration max) {
 
         public static final Pause NONE = new Pause(Duration.ZERO, Duration.ZERO);
-        /// 2 to 5 seconds.
-        public static final Pause DEFAULT = new Pause(Duration.ofSeconds(2), Duration.ofSeconds(5));
+        /// 1 to 3 seconds.
+        public static final Pause DEFAULT = new Pause(Duration.ofSeconds(1), Duration.ofSeconds(3));
 
         private static final Pattern SECONDS =
                 Pattern.compile("(\\d{1,6}(?:\\.\\d{1,3})?)(?:-(\\d{1,6}(?:\\.\\d{1,3})?))?");

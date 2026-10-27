@@ -30,10 +30,10 @@ public final class CommonOptions {
             description = "Maximum parallel HTTP requests, and jars read at the same time (default: ${DEFAULT-VALUE}).")
     int concurrency;
 
-    @Option(names = "--pause", defaultValue = "2-5", paramLabel = "SECONDS", converter = PauseConverter.class,
+    @Option(names = "--pause", defaultValue = "1-3", paramLabel = "SECONDS", converter = PauseConverter.class,
             description = "Random pause between two requests to the repository, in seconds: a range such as 2-5, a "
                     + "fixed 3, or 0 for none. With a pause, requests go one at a time, also across commands that "
-                    + "share --work. Maven Central needs at least 2; shorter pauses and 0 are only for other "
+                    + "share --work. Maven Central needs at least 1; shorter pauses and 0 are only for other "
                     + "repositories (default: ${DEFAULT-VALUE}).")
     Pacer.Pause pause;
 

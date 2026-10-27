@@ -80,9 +80,9 @@ public final class SourceDocCheck implements Callable<Integer> {
             description = "Maximum parallel HTTP requests (default: ${DEFAULT-VALUE}).")
     int concurrency;
 
-    @Option(names = "--pause", defaultValue = "2-5", paramLabel = "SECONDS",
+    @Option(names = "--pause", defaultValue = "1-3", paramLabel = "SECONDS",
             description = "Random pause between two requests to the repository, in seconds: 2-5, 3, or 0 for none; "
-                    + "Maven Central needs at least 2 (default: ${DEFAULT-VALUE}).")
+                    + "Maven Central needs at least 1 (default: ${DEFAULT-VALUE}).")
     String pause;
 
     @Option(names = "--offline", description = "Use cached files only; fail when something is not cached.")
