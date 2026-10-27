@@ -410,8 +410,9 @@ class BomResolverTest {
         assertEquals(List.of("${tcnative.version}"), result.unresolved().getLast().unresolved());
         IOException e = assertThrows(IOException.class, result::requireResolved);
         assertEquals("6 managed dependencies keep unresolved references: ${tcnative.version} (declared in "
-                + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, io.netty:netty-tcnative:linux-aarch_64, "
-                + "io.netty:netty-tcnative:linux-x86_64 and 2 more; ${unknown.group} (declared in "
+                + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, "
+                + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
+                + "${unknown.group} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): ${unknown.group}:art; neither the poms that declare them nor "
                 + "their parents define these properties (profiles that depend on the machine are not applied)",
                 e.getMessage());

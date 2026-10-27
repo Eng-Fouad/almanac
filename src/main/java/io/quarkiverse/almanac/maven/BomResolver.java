@@ -384,11 +384,15 @@ public final class BomResolver {
             }
             if (MACHINE_PROPERTIES.stream().anyMatch(property::startsWith)) {
                 machine = true;
-            } else if (activation.propertyValue() != null ? !activation.propertyValue().startsWith("!")
-                    : !name.startsWith("!")) {
-                return Activated.NO;
-            } else if (!machine) {
-                return Activated.YES;
+            } else {
+                String value = activation.propertyValue();
+                boolean holds = value != null ? value.startsWith("!") : name.startsWith("!");
+                if (!holds) {
+                    return Activated.NO;
+                }
+                if (!machine) {
+                    return Activated.YES;
+                }
             }
         }
         return machine ? Activated.DEPENDS_ON_THE_MACHINE : Activated.NO;
