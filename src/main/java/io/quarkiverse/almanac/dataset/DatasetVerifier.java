@@ -276,8 +276,8 @@ public final class DatasetVerifier {
         }
     }
 
-    /// The release rules: config and extensions together, config only with a BOM, every restored snapshot consistent
-    /// and from a validated extractor.
+    /// The release rules: config only with extensions (extensions need no config), both only with a BOM, every
+    /// restored snapshot consistent and from a validated extractor.
     private void checkReleases(Dataset dataset, Contents contents) {
         Map<Kind, Integer> counts = new EnumMap<>(Kind.class);
         for (Dataset.Release release : dataset.releases()) {
@@ -291,12 +291,12 @@ public final class DatasetVerifier {
                     }
                 }
             }
-            if (release.has(Kind.CONFIG) != release.has(Kind.EXTENSIONS)) {
-                problem("releases", version + " has " + (release.has(Kind.CONFIG) ? "config" : "extensions")
-                        + " without " + (release.has(Kind.CONFIG) ? "extensions" : "config"));
+            if (release.has(Kind.CONFIG) && !release.has(Kind.EXTENSIONS)) {
+                problem("releases", version + " has config without extensions");
             }
-            if (release.has(Kind.CONFIG) && !release.bom()) {
-                problem("releases", version + " has config but no BOM");
+            if ((release.has(Kind.CONFIG) || release.has(Kind.EXTENSIONS)) && !release.bom()) {
+                problem("releases", version + " has " + (release.has(Kind.CONFIG) ? "config" : "extensions")
+                        + " but no BOM");
             }
             ConfigSnapshot config = contents.configs().get(version);
             if (config != null) {

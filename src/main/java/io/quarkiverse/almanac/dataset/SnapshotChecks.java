@@ -1,5 +1,6 @@
 package io.quarkiverse.almanac.dataset;
 
+import io.quarkiverse.almanac.maven.BomSnapshots;
 import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigProperty;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
@@ -57,6 +58,17 @@ final class SnapshotChecks {
             }
         }
         return Optional.empty();
+    }
+
+    /// What a consistent BOM snapshot keeps as written, for a warning: how many managed dependencies keep a `${...}`
+    /// reference ([BomSnapshots#unresolved]), with the first of them; empty when none does.
+    static Optional<String> references(BomSnapshot bom) {
+        List<ManagedDep> kept = bom.deps().stream().filter(BomSnapshots::unresolved).toList();
+        if (kept.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(kept.size() + (kept.size() == 1 ? " managed dependency keeps" : " managed dependencies keep")
+                + " a ${...} reference as written (e.g. " + kept.getFirst().id() + " " + kept.getFirst().v() + ")");
     }
 
     private static void bom(String release, BomSnapshot bom, List<String> problems) {

@@ -89,13 +89,15 @@ public final class ConfigCommand implements Callable<Integer> {
         return missing;
     }
 
-    /// Extracts the releases one after the other (each one in parallel internally); false when any failed.
+    /// Extracts the releases one after the other (each one in parallel internally); false when any failed or was not
+    /// attempted.
     static boolean extract(Workspace workspace, List<QuarkusVersion> versions, ConfigExtractor.Source source,
             boolean force) {
         return extract(workspace, versions, source, force, ConfigExtractor.DocAnnotationMode.SOURCES);
     }
 
-    /// Extracts the releases one after the other (each one in parallel internally); false when any failed.
+    /// Extracts the releases one after the other (each one in parallel internally), until requests stop
+    /// ([ReleaseRun]); false when any failed or was not attempted.
     ///
     /// @param docAnnotations where the bytecode reader gets the doc annotations of releases before 3.14
     static boolean extract(Workspace workspace, List<QuarkusVersion> versions, ConfigExtractor.Source source,
@@ -103,24 +105,30 @@ public final class ConfigCommand implements Callable<Integer> {
         Log.info("config: %d releases, source %s, doc annotations %s", versions.size(),
                 source.name().toLowerCase(Locale.ROOT), docAnnotations.name().toLowerCase(Locale.ROOT));
         ConfigExtractor extractor = new ConfigExtractor(workspace.repo(), workspace.snapshots(), docAnnotations);
+        ReleaseRun run = new ReleaseRun("config", workspace.repo().http(), versions.size());
         int failed = 0;
         for (QuarkusVersion version : versions) {
+            if (!run.mayStart()) {
+                continue;
+            }
             try {
                 if (!extractor.extract(workspace.boms().load(version.text(), false), source, force)) {
                     failed++;
                 }
             } catch (IOException e) {
                 Log.error("config %s: %s", version, e.getMessage());
+                run.failed(e);
                 failed++;
             } catch (RuntimeException e) {
                 // one broken release must not stop the others
                 Log.error("config %s: %s", version, e);
+                run.failed(e);
                 failed++;
             }
         }
         if (failed > 0) {
             Log.error("config: %d of %d releases produced no snapshot", failed, versions.size());
         }
-        return failed == 0;
+        return run.finish() && failed == 0;
     }
 }

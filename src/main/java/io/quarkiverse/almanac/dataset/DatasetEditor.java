@@ -1,6 +1,7 @@
 package io.quarkiverse.almanac.dataset;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
 import io.quarkiverse.almanac.util.AtomicFiles;
 import io.quarkiverse.almanac.util.Json;
@@ -64,8 +65,10 @@ public final class DatasetEditor {
     /// @param replaced  snapshots that replaced different ones (only with `replace`)
     /// @param unchanged snapshots equal to the dataset's
     /// @param refusals  snapshots that were not imported
+    /// @param warnings  `kind version: what` of imported snapshots that keep something as written: the managed
+    ///                  dependencies of a BOM with a `${...}` reference
     public record ImportReport(List<String> added, List<String> replaced, List<String> unchanged,
-            List<Refusal> refusals) {
+            List<Refusal> refusals, List<String> warnings) {
 
         /// Whether any snapshot was refused for a reason other than an unvalidated extractor.
         public boolean hasInconsistencies() {
@@ -118,12 +121,14 @@ public final class DatasetEditor {
     /// Imports work snapshots. A snapshot is refused when its file cannot be read losslessly into its record, when it
     /// breaks the snapshot invariants, when its config extractor is not validated
     /// ([DatasetFormat#UNVALIDATED_EXTRACTORS]), when it differs from the dataset's snapshot of the same release and
-    /// kind and `replace` is false, or when it would leave a release with config but no extensions (or the reverse),
-    /// or with config but no BOM. The others are imported; refusals never stop them.
+    /// kind and `replace` is false, or when it would leave a release with config but no extensions, or with config or
+    /// extensions but no BOM. Extensions need no config. The others are imported; refusals never stop them. A BOM
+    /// whose managed dependencies keep a `${...}` reference is imported as it is, with a warning.
     public ImportReport importSnapshots(List<Candidate> candidates, boolean replace) {
         List<Refusal> refusals = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
         SortedMap<String, Map<Kind, Object>> accepted = new TreeMap<>(ReleaseOrder.COMPARATOR);
-        Map<String, Refusal> refusedConfig = new HashMap<>();
+        Map<String, Refusal> refusedExtensions = new HashMap<>();
         for (Candidate candidate : candidates) {
             String version = candidate.version();
             Kind kind = candidate.kind();
@@ -149,14 +154,18 @@ public final class DatasetEditor {
             }
             if (refusal != null) {
                 refusals.add(refusal);
-                if (kind == Kind.CONFIG || kind == Kind.EXTENSIONS) {
-                    refusedConfig.putIfAbsent(version, refusal);
+                if (kind == Kind.EXTENSIONS) {
+                    refusedExtensions.putIfAbsent(version, refusal);
                 }
             } else {
                 accepted.computeIfAbsent(version, v -> new EnumMap<>(Kind.class)).put(kind, snapshot);
+                if (kind == Kind.BOM) {
+                    SnapshotChecks.references((BomSnapshot) snapshot)
+                            .ifPresent(references -> warnings.add(kind + " " + version + ": " + references));
+                }
             }
         }
-        pairConfigWithExtensions(accepted, refusedConfig, refusals);
+        requirePrerequisites(accepted, refusedExtensions, refusals);
 
         List<String> added = new ArrayList<>();
         List<String> replaced = new ArrayList<>();
@@ -175,55 +184,49 @@ public final class DatasetEditor {
             contents.put(version, kind, snapshot);
         }));
         return new ImportReport(List.copyOf(added), List.copyOf(replaced), List.copyOf(unchanged),
-                List.copyOf(refusals));
+                List.copyOf(refusals), List.copyOf(warnings));
     }
 
-    /// Config and extensions of a release go together and need its BOM: drops accepted config or
-    /// extension snapshots whose partner was refused or would be missing, or whose release would have no BOM,
-    /// recording why.
-    private void pairConfigWithExtensions(SortedMap<String, Map<Kind, Object>> accepted,
-            Map<String, Refusal> refusedConfig, List<Refusal> refusals) {
+    /// Config needs the release's extensions, and both need its BOM (extensions need no config): drops accepted config
+    /// or extension snapshots whose release would lack what they need, recording why.
+    private void requirePrerequisites(SortedMap<String, Map<Kind, Object>> accepted,
+            Map<String, Refusal> refusedExtensions, List<Refusal> refusals) {
         accepted.forEach((version, kinds) -> {
-            if (!kinds.containsKey(Kind.CONFIG) && !kinds.containsKey(Kind.EXTENSIONS)) {
-                return;
-            }
-            boolean config = kinds.containsKey(Kind.CONFIG) || contents.has(version, Kind.CONFIG);
-            boolean extensions = kinds.containsKey(Kind.EXTENSIONS) || contents.has(version, Kind.EXTENSIONS);
-            boolean bom = kinds.containsKey(Kind.BOM) || contents.has(version, Kind.BOM);
-            String reason = null;
-            boolean unvalidated = false;
-            Refusal partner = refusedConfig.get(version);
-            if (partner != null) {
-                reason = "its " + partner.kind() + " snapshot is refused (" + partner.reason() + ")";
-                unvalidated = partner.unvalidated();
-            } else if (config != extensions) {
-                reason = "config and extensions go together, and the " + (config ? Kind.EXTENSIONS : Kind.CONFIG)
-                        + " snapshot is neither in the dataset nor in this import";
-            } else if (!bom) {
-                reason = "config and extensions need the release's BOM snapshot, which is neither in the dataset nor "
-                        + "in this import";
-            }
-            if (reason != null) {
+            if (!kinds.containsKey(Kind.BOM) && !contents.has(version, Kind.BOM)) {
                 for (Kind kind : List.of(Kind.CONFIG, Kind.EXTENSIONS)) {
-                    Object snapshot = kinds.get(kind);
-                    // a partner equal to the dataset's changes nothing and stays "unchanged"
-                    if (snapshot != null && !(partner != null && snapshot.equals(contents.get(version, kind)))) {
-                        kinds.remove(kind);
-                        refusals.add(new Refusal(version, kind, reason, unvalidated));
+                    if (kinds.remove(kind) != null) {
+                        refusals.add(new Refusal(version, kind, "config and extensions need the release's BOM "
+                                + "snapshot, which is neither in the dataset nor in this import", false));
                     }
                 }
+                return;
+            }
+            if (kinds.containsKey(Kind.CONFIG) && !kinds.containsKey(Kind.EXTENSIONS)
+                    && !contents.has(version, Kind.EXTENSIONS)) {
+                Refusal partner = refusedExtensions.get(version);
+                kinds.remove(Kind.CONFIG);
+                refusals.add(partner != null
+                        ? new Refusal(version, Kind.CONFIG, "its extensions snapshot is refused (" + partner.reason()
+                                + ")", partner.unvalidated())
+                        : new Refusal(version, Kind.CONFIG, "config needs the release's extensions snapshot, which is "
+                                + "neither in the dataset nor in this import", false));
             }
         });
         accepted.values().removeIf(Map::isEmpty);
     }
 
     /// Removes snapshots; the releases stay known with their dates. Removing a BOM removes the release's config and
-    /// extensions too, and config and extensions are removed together. Returns the removed `kind version` entries.
+    /// extensions too, and removing extensions removes the config, which needs them; config goes alone. Returns the
+    /// removed `kind version` entries.
     public List<String> remove(Collection<String> versions, Set<Kind> kinds) {
-        // whichever kind is removed, config and extensions go: a BOM's config needs it, and they go together
+        // a BOM takes config and extensions along (they need it), extensions take the config (it needs them)
         Set<Kind> effective = EnumSet.copyOf(kinds);
-        effective.add(Kind.CONFIG);
-        effective.add(Kind.EXTENSIONS);
+        if (effective.contains(Kind.BOM)) {
+            effective.add(Kind.EXTENSIONS);
+        }
+        if (effective.contains(Kind.EXTENSIONS)) {
+            effective.add(Kind.CONFIG);
+        }
         List<String> removed = new ArrayList<>();
         for (String version : ReleaseOrder.sorted(versions)) {
             for (Kind kind : effective) {

@@ -98,6 +98,8 @@ const versionsJson = {
     const s = stream(v);
     const entry = { v, date, stream: s, pre: !/^\d+(\.\d+)*(\.Final)?$/.test(v), lts: LTS.includes(s), config: CONFIG_VIS.includes(i) };
     if (entry.config) entry.configSource = compareVersions(v, '3.25') >= 0 ? 'model' : 'bytecode';
+    // extension snapshots: here exactly the config snapshots (the site tests cover releases with extensions only)
+    entry.ext = entry.config;
     return entry;
   }),
 };

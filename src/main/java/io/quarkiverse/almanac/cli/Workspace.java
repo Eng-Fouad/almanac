@@ -4,7 +4,6 @@ import io.quarkiverse.almanac.dataset.Dataset;
 import io.quarkiverse.almanac.maven.BomSnapshots;
 import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.MavenRepo;
-import io.quarkiverse.almanac.maven.Pacer;
 import io.quarkiverse.almanac.maven.QuarkusVersion;
 import io.quarkiverse.almanac.maven.RemoteJar;
 import io.quarkiverse.almanac.maven.VersionSelector;
@@ -36,7 +35,7 @@ final class Workspace implements AutoCloseable {
         this.preReleases = options.preReleases;
         this.work = options.work;
         this.datasetDir = options.dataset;
-        this.http = new Http(options.concurrency, options.offline, Pacer.forCache(options.pause, cacheDir()));
+        this.http = new Http(options.concurrency, options.offline, options.pacer(cacheDir()));
         this.repo = new MavenRepo(options.repo, cacheDir(), http, jarOptions);
         this.snapshots = new SnapshotStore(work.resolve("snapshots"), datasetDir);
         this.boms = new BomSnapshots(repo, snapshots);
