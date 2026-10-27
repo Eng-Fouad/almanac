@@ -209,6 +209,36 @@ class DatasetEditorTest {
     }
 
     @Test
+    void importsABomThatKeepsReferencesAsWrittenWithAWarning() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            SnapshotStore work = work(dir);
+            // the classifier placeholder of an id is no reference
+            BomSnapshot literal = Samples.bom("2.4.1.Final", "2021-11-03",
+                    "io.netty:netty-tcnative", "${tcnative.version}",
+                    "io.netty:netty-tcnative:linux-x86_64", "${tcnative.version}",
+                    "io.quarkus:quarkus-bom-quarkus-platform-descriptor:json:${quarkus.version}", "2.4.1.Final",
+                    "io.quarkus:quarkus-core", "2.4.1.Final");
+            work.write("2.4.1.Final", SnapshotStore.BOM, literal);
+            DatasetEditor editor = DatasetEditor.open(dir.resolve("dataset"));
+
+            DatasetEditor.ImportReport report = editor.importSnapshots(all(work), false);
+
+            assertEquals(List.of(), report.refusals());
+            assertTrue(report.added().contains("bom 2.4.1.Final"), report.added().toString());
+            assertEquals(List.of("bom 2.4.1.Final: 2 managed dependencies keep a ${...} reference as written (e.g. "
+                    + "io.netty:netty-tcnative ${tcnative.version})"), report.warnings());
+            editor.write();
+            assertEquals(literal, Dataset.open(dir.resolve("dataset")).bom("2.4.1.Final"));
+
+            // the same warning for a snapshot equal to the dataset's
+            DatasetEditor.ImportReport again = DatasetEditor.open(dir.resolve("dataset"))
+                    .importSnapshots(List.of(candidate(work, "2.4.1.Final", Kind.BOM)), false);
+            assertEquals(List.of("bom 2.4.1.Final"), again.unchanged());
+            assertEquals(report.warnings(), again.warnings());
+        }
+    }
+
+    @Test
     void replacingADifferentSnapshotNeedsForce() throws Exception {
         try (ScratchDir dir = ScratchDir.create()) {
             SnapshotStore work = work(dir);

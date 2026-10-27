@@ -109,10 +109,14 @@ public final class DatasetCommand implements Runnable {
         return ReleaseOrder.sorted(folders);
     }
 
-    /// Logs an import: counts per kind, then each refusal (unvalidated ones as warnings, others as errors).
+    /// Logs an import: counts per kind, the warnings of imported snapshots, then each refusal (unvalidated ones as
+    /// warnings, others as errors).
     static void logImport(DatasetEditor.ImportReport report) {
         Log.info("dataset import: added %s; replaced %s; unchanged %s; refused %d", perKind(report.added()),
                 perKind(report.replaced()), perKind(report.unchanged()), report.refusals().size());
+        for (String warning : report.warnings()) {
+            Log.warn("dataset import: %s", warning);
+        }
         for (DatasetEditor.Refusal refusal : report.refusals()) {
             if (refusal.unvalidated()) {
                 Log.warn("dataset import: refused %s", refusal);

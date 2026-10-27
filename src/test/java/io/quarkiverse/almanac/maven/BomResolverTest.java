@@ -388,13 +388,15 @@ class BomResolverTest {
                 properties("tcnative.version=2.0.45"),
                 managed(dep("io.netty:netty-tcnative::linux-x86_64:${tcnative.version}"),
                         dep("io.netty:netty-tcnative-boringssl-static:${boring.version}")));
-        BomResolver.Result result = resolve(repo, bom).requireResolved();
+        BomResolver.Result result = resolve(repo, bom);
         assertEquals(Map.of("io.netty:netty-tcnative:linux-x86_64", "2.0.45",
                 "io.netty:netty-tcnative-boringssl-static", "2.0.46"), versions(result));
+        assertEquals(List.of(), result.unresolved());
+        assertEquals(Optional.empty(), result.describeUnresolved());
     }
 
     @Test
-    void anUnresolvedVersionFailsTheBom() throws IOException {
+    void anUnresolvedVersionStaysAsWrittenAndIsDescribed() throws IOException {
         String bom = project("io.quarkus:quarkus-bom:2.4.1.Final",
                 managed(dep("io.netty:netty-tcnative:${tcnative.version}"),
                         dep("io.netty:netty-tcnative::linux-x86_64:${tcnative.version}"),
@@ -406,16 +408,18 @@ class BomResolverTest {
 
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE, bom);
 
+        assertEquals("${tcnative.version}", versions(result).get("io.netty:netty-tcnative:linux-x86_64"));
+        assertEquals("1", versions(result).get("${unknown.group}:art"));
+        assertEquals(7, result.deps().size());
         assertEquals(6, result.unresolved().size());
         assertEquals(List.of("${tcnative.version}"), result.unresolved().getLast().unresolved());
-        IOException e = assertThrows(IOException.class, result::requireResolved);
-        assertEquals("6 managed dependencies keep unresolved references: ${tcnative.version} (declared in "
+        assertEquals(Optional.of("6 managed dependencies keep unresolved references: ${tcnative.version} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, "
                 + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
                 + "${unknown.group} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): ${unknown.group}:art; neither the poms that declare them nor "
-                + "their parents define these properties (profiles that depend on the machine are not applied)",
-                e.getMessage());
+                + "their parents define these properties (profiles that depend on the machine are not applied)"),
+                result.describeUnresolved());
     }
 
     @Test
@@ -430,10 +434,10 @@ class BomResolverTest {
 
         assertEquals(List.of("io.netty:netty-tcnative:linux-x86_64"),
                 result.unresolved().stream().map(BomResolver.Entry::id).toList());
-        IOException e = assertThrows(IOException.class, result::requireResolved);
-        assertTrue(e.getMessage().startsWith("1 managed dependency keeps unresolved references: ${tcnative.version} "
+        String described = result.describeUnresolved().orElseThrow();
+        assertTrue(described.startsWith("1 managed dependency keeps unresolved references: ${tcnative.version} "
                 + "(declared in io.netty:netty-bom:4.1.69.Final, imported through io.netty:netty-bom:4.1.69.Final): "
-                + "io.netty:netty-tcnative:linux-x86_64;"), e.getMessage());
+                + "io.netty:netty-tcnative:linux-x86_64;"), described);
     }
 
     @Test
@@ -713,7 +717,9 @@ class BomResolverTest {
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE,
                 project("g:bom:1", managed(dep("x:y:1.0-${oops"), dep("x:z:1"))));
         assertEquals(List.of("${oops"), result.unresolved().getFirst().unresolved());
-        assertThrows(IOException.class, result::requireResolved);
+        assertEquals(Map.of("x:y", "1.0-${oops", "x:z", "1"), versions(result));
+        assertTrue(result.describeUnresolved().orElseThrow().startsWith("1 managed dependency keeps unresolved "
+                + "references: ${oops (declared in g:bom:1): x:y;"), result.describeUnresolved().toString());
     }
 
     @Test

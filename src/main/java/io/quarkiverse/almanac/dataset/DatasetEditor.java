@@ -1,6 +1,7 @@
 package io.quarkiverse.almanac.dataset;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
 import io.quarkiverse.almanac.util.AtomicFiles;
 import io.quarkiverse.almanac.util.Json;
@@ -64,8 +65,10 @@ public final class DatasetEditor {
     /// @param replaced  snapshots that replaced different ones (only with `replace`)
     /// @param unchanged snapshots equal to the dataset's
     /// @param refusals  snapshots that were not imported
+    /// @param warnings  `kind version: what` of imported snapshots that keep something as written: the managed
+    ///                  dependencies of a BOM with a `${...}` reference
     public record ImportReport(List<String> added, List<String> replaced, List<String> unchanged,
-            List<Refusal> refusals) {
+            List<Refusal> refusals, List<String> warnings) {
 
         /// Whether any snapshot was refused for a reason other than an unvalidated extractor.
         public boolean hasInconsistencies() {
@@ -119,9 +122,11 @@ public final class DatasetEditor {
     /// breaks the snapshot invariants, when its config extractor is not validated
     /// ([DatasetFormat#UNVALIDATED_EXTRACTORS]), when it differs from the dataset's snapshot of the same release and
     /// kind and `replace` is false, or when it would leave a release with config but no extensions, or with config or
-    /// extensions but no BOM. Extensions need no config. The others are imported; refusals never stop them.
+    /// extensions but no BOM. Extensions need no config. The others are imported; refusals never stop them. A BOM
+    /// whose managed dependencies keep a `${...}` reference is imported as it is, with a warning.
     public ImportReport importSnapshots(List<Candidate> candidates, boolean replace) {
         List<Refusal> refusals = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
         SortedMap<String, Map<Kind, Object>> accepted = new TreeMap<>(ReleaseOrder.COMPARATOR);
         Map<String, Refusal> refusedExtensions = new HashMap<>();
         for (Candidate candidate : candidates) {
@@ -154,6 +159,10 @@ public final class DatasetEditor {
                 }
             } else {
                 accepted.computeIfAbsent(version, v -> new EnumMap<>(Kind.class)).put(kind, snapshot);
+                if (kind == Kind.BOM) {
+                    SnapshotChecks.references((BomSnapshot) snapshot)
+                            .ifPresent(references -> warnings.add(kind + " " + version + ": " + references));
+                }
             }
         }
         requirePrerequisites(accepted, refusedExtensions, refusals);
@@ -175,7 +184,7 @@ public final class DatasetEditor {
             contents.put(version, kind, snapshot);
         }));
         return new ImportReport(List.copyOf(added), List.copyOf(replaced), List.copyOf(unchanged),
-                List.copyOf(refusals));
+                List.copyOf(refusals), List.copyOf(warnings));
     }
 
     /// Config needs the release's extensions, and both need its BOM (extensions need no config): drops accepted config

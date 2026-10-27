@@ -45,8 +45,9 @@ import java.util.regex.Pattern;
 ///
 /// Like Maven, a merge keeps the last of a pom's own entries with one key (Maven warns about such duplicates) and the
 /// first of the merged-in ones; a pom with neither parent entries nor imports keeps its list as written, and of
-/// entries with the same id the first counts. Parent, import and property reference cycles fail. Entries that keep a
-/// `${...}` reference are listed by [Result#unresolved()], which [Result#requireResolved()] turns into a failure.
+/// entries with the same id the first counts. Parent, import and property reference cycles fail. A reference that
+/// no pom defines stays as written in a managed dependency, as in Maven's effective model: [Result#unresolved()] lists
+/// the entries that keep one, and [Result#describeUnresolved()] says where they come from.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -110,13 +111,13 @@ public final class BomResolver {
             return entries.stream().filter(entry -> !entry.unresolved().isEmpty()).toList();
         }
 
-        /// This result, when no entry keeps a `${...}` reference.
-        ///
-        /// @throws IOException naming the references left, the entries that hold them and where they are declared
-        public Result requireResolved() throws IOException {
+        /// What [#unresolved()] holds, for a warning: how many entries keep a reference, then each reference with the
+        /// pom that declares it, the import that brought it in and the first entries that hold it; empty when no entry
+        /// keeps one.
+        public Optional<String> describeUnresolved() {
             List<Entry> unresolved = unresolved();
             if (unresolved.isEmpty()) {
-                return this;
+                return Optional.empty();
             }
             Map<String, List<String>> idsByCause = new TreeMap<>();
             for (Entry entry : unresolved) {
@@ -126,7 +127,7 @@ public final class BomResolver {
             }
             List<String> causes = new ArrayList<>();
             idsByCause.forEach((cause, ids) -> causes.add(cause + ": " + examples(ids)));
-            throw new IOException(String.format(Locale.ROOT, "%s unresolved references: %s; neither the poms that "
+            return Optional.of(String.format(Locale.ROOT, "%s unresolved references: %s; neither the poms that "
                             + "declare them nor their parents define these properties (profiles that depend on the "
                             + "machine are not applied)",
                     unresolved.size() == 1 ? "1 managed dependency keeps" : unresolved.size()

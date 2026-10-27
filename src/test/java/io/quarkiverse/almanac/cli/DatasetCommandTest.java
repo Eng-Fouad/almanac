@@ -209,6 +209,54 @@ class DatasetCommandTest {
     }
 
     @Test
+    void aBomThatKeepsAReferenceIsWrittenAndImportedWithAWarningEach() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            Path work = dir.resolve("work");
+            Path dataset = dir.resolve("dataset");
+            String pom = "cache/io/quarkus/quarkus-bom/2.4.1.Final/quarkus-bom-2.4.1.Final.pom";
+            AtomicFiles.writeString(work.resolve("cache/io/quarkus/quarkus-bom/maven-metadata.xml"),
+                    "<metadata><versioning><versions><version>2.4.1.Final</version></versions></versioning>"
+                            + "</metadata>\n");
+            AtomicFiles.writeString(work.resolve(pom), """
+                    <project>
+                      <groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId><version>2.4.1.Final</version>
+                      <dependencyManagement><dependencies>
+                        <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-core</artifactId>
+                          <version>2.4.1.Final</version></dependency>
+                        <dependency><groupId>io.netty</groupId><artifactId>netty-tcnative</artifactId>
+                          <version>${tcnative.version}</version></dependency>
+                      </dependencies></dependencyManagement>
+                    </project>
+                    """);
+            AtomicFiles.writeString(work.resolve(pom + ".last-modified"), "2021-11-03T09:00:00Z\n");
+            String[] common = {"--offline", "--work", work.toString(), "--dataset", dataset.toString()};
+
+            Run bom = run(concat(new String[]{"bom", "--versions", "2.4.1.Final"}, common));
+            assertEquals(0, bom.exitCode(), bom.log());
+            assertEquals(1, bom.log().lines().filter(line -> line.startsWith("warning: ")).count(), bom.log());
+            assertTrue(bom.log().contains("warning: bom 2.4.1.Final: 1 managed dependency keeps unresolved "
+                    + "references: ${tcnative.version} (declared in io.quarkus:quarkus-bom:2.4.1.Final): "
+                    + "io.netty:netty-tcnative;"), bom.log());
+            Path written = work.resolve("snapshots/2.4.1.Final/bom.json");
+            assertTrue(Files.readString(written).contains("\"v\": \"${tcnative.version}\""), Files.readString(written));
+
+            Run imported = run(concat(new String[]{"dataset", "import", "--versions", "2.4.1.Final", "--kinds",
+                    "bom"}, common));
+            assertEquals(0, imported.exitCode(), imported.log());
+            assertTrue(imported.log().contains("dataset import: added 1 (bom 1); replaced 0; unchanged 0; refused 0\n"
+                    + "warning: dataset import: bom 2.4.1.Final: 1 managed dependency keeps a ${...} reference as "
+                    + "written (e.g. io.netty:netty-tcnative ${tcnative.version})\n"), imported.log());
+            assertEquals(0, run("dataset", "verify", "--offline", "--dataset", dataset.toString()).exitCode());
+
+            Path exported = dir.resolve("exported");
+            Run export = run(concat(new String[]{"dataset", "export", "--kinds", "bom", "--out", exported.toString()},
+                    common));
+            assertEquals(0, export.exitCode(), export.log());
+            assertEquals(Files.readString(written), Files.readString(exported.resolve("2.4.1.Final/bom.json")));
+        }
+    }
+
+    @Test
     void usageErrors() throws Exception {
         try (ScratchDir dir = ScratchDir.create()) {
             String[] common = {"--offline", "--work", dir.resolve("work").toString(), "--dataset",

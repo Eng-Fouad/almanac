@@ -6,19 +6,25 @@ import io.quarkiverse.almanac.model.ManagedDep;
 import io.quarkiverse.almanac.util.SnapshotStore;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// [BomSnapshots] over an offline repository cache: a BOM that is not flattened is resolved with its parents and
-/// imports, and a BOM that keeps an unresolved version writes nothing.
+/// imports; a version that Maven cannot resolve either is kept as written with one warning, while what Maven fails on
+/// (a parent or an import that cannot be read or keeps a reference, a cycle) writes nothing.
 class BomSnapshotsTest {
 
     /// Shaped like the published Quarkus 1.x BOMs: a parent chain, properties and imported BOMs.
@@ -172,8 +178,32 @@ class BomSnapshotsTest {
         }
     }
 
+    /// What `action` logs (standard error), with `\n` line ends.
+    static String log(IoAction action) throws IOException {
+        ByteArrayOutputStream log = new ByteArrayOutputStream();
+        PrintStream originalErr = System.err;
+        System.setErr(new PrintStream(log, true, StandardCharsets.UTF_8));
+        try {
+            action.run();
+        } finally {
+            System.setErr(originalErr);
+        }
+        return log.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+    }
+
+    @FunctionalInterface
+    interface IoAction {
+        void run() throws IOException;
+    }
+
+    /// The BOMs of a cache folder, read offline into a work folder without dataset.
+    private static BomSnapshots boms(Path cache, SnapshotStore store, Http offline) {
+        return new BomSnapshots(new MavenRepo(MavenRepo.CENTRAL, cache, offline, RemoteJar.Options.DEFAULT), store);
+    }
+
     @Test
-    void aBomWithAnUnresolvedVersionWritesNothing() throws Exception {
+    void aVersionThatMavenCannotResolveIsKeptAsWrittenWithOneWarning() throws Exception {
+        // shaped like the published 2.4.1.Final, flattened with the netty-tcnative versions of netty-bom 4.1.68.Final
         String flattened = """
                 <project>
                   <groupId>io.quarkus</groupId>
@@ -196,23 +226,145 @@ class BomSnapshotsTest {
                 </project>
                 """;
         try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
-            cache(dir.resolve("cache"), "io.quarkus:quarkus-bom:2.4.1.Final", flattened);
+            Path cache = dir.resolve("cache");
+            cache(cache, "io.quarkus:quarkus-bom:2.4.1.Final", flattened);
+            Files.writeString(cache.resolve(MavenRepo.artifactPath("io.quarkus", "quarkus-bom", "2.4.1.Final", "pom")
+                    + ".last-modified"), "2021-11-03T09:00:00Z\n", StandardCharsets.UTF_8);
             SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
-            BomSnapshots boms = new BomSnapshots(
-                    new MavenRepo(MavenRepo.CENTRAL, dir.resolve("cache"), offline, RemoteJar.Options.DEFAULT), store);
+            BomSnapshots boms = boms(cache, store, offline);
+            BomSnapshot expected = new BomSnapshot("2.4.1.Final", "2021-11-03", List.of(
+                    new ManagedDep("io.netty:netty-common", "4.1.69.Final"),
+                    new ManagedDep("io.netty:netty-tcnative", "${tcnative.version}")));
 
-            IOException e = assertThrows(IOException.class, () -> boms.load("2.4.1.Final", false));
-            assertTrue(e.getMessage().contains("${tcnative.version} (declared in io.quarkus:quarkus-bom:2.4.1.Final): "
-                    + "io.netty:netty-tcnative"), e.getMessage());
-            assertFalse(store.exists("2.4.1.Final", SnapshotStore.BOM));
+            List<BomSnapshot> loaded = new ArrayList<>();
+            String first = log(() -> loaded.add(boms.load("2.4.1.Final", false)));
 
-            BomSnapshot old = new BomSnapshot("2.4.1.Final", "2021-11-03",
-                    List.of(new ManagedDep("io.netty:netty-tcnative", "${tcnative.version}")));
-            store.write("2.4.1.Final", SnapshotStore.BOM, old);
-            assertEquals(old, boms.load("2.4.1.Final", false), "an existing snapshot is reused with a warning");
-            assertThrows(IOException.class, () -> boms.load("2.4.1.Final", true));
-            assertEquals(old, store.read("2.4.1.Final", SnapshotStore.BOM, BomSnapshot.class));
+            assertEquals(List.of(expected), loaded);
+            assertEquals(expected, store.read("2.4.1.Final", SnapshotStore.BOM, BomSnapshot.class));
+            assertEquals("""
+                    warning: bom 2.4.1.Final: 1 managed dependency keeps unresolved references: ${tcnative.version} \
+                    (declared in io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative; neither the poms that \
+                    declare them nor their parents define these properties (profiles that depend on the machine are \
+                    not applied); they are kept as written, as Maven keeps them
+                    bom 2.4.1.Final: 2 managed dependencies (0 io.quarkus), released 2021-11-03
+                    """, first);
+
+            // reused like any other snapshot, without a warning
+            byte[] written = Files.readAllBytes(store.file("2.4.1.Final", SnapshotStore.BOM));
+            String reused = log(() -> assertEquals(expected, boms.load("2.4.1.Final", false)));
+            assertFalse(reused.contains("warning") || reused.contains("managed dependencies"), reused);
+
+            // --force resolves it again: the same warning, the same bytes
+            String forced = log(() -> assertEquals(expected, boms.load("2.4.1.Final", true)));
+            assertEquals(first, forced);
+            assertArrayEquals(written, Files.readAllBytes(store.file("2.4.1.Final", SnapshotStore.BOM)));
         }
+    }
+
+    @Test
+    void theWarningNamesThePomAndTheImportThatBroughtTheReferencesIn() throws Exception {
+        // netty-bom 4.1.68.Final manages netty-tcnative at a property it does not define; an early BOM manages
+        // el-impl at a property it misspells
+        List<String> tcnative = new ArrayList<>();
+        for (String classifier : List.of("", "linux-x86_64", "linux-aarch_64", "osx-x86_64", "windows-x86_64")) {
+            tcnative.add("<dependency><groupId>io.netty</groupId><artifactId>netty-tcnative</artifactId>"
+                    + "<version>${tcnative.version}</version>"
+                    + (classifier.isEmpty() ? "" : "<classifier>" + classifier + "</classifier>") + "</dependency>");
+        }
+        String nettyBom = """
+                <project>
+                  <groupId>io.netty</groupId>
+                  <artifactId>netty-bom</artifactId>
+                  <version>4.1.68.Final</version>
+                  <dependencyManagement><dependencies>
+                    <dependency><groupId>io.netty</groupId><artifactId>netty-common</artifactId>
+                      <version>${project.version}</version></dependency>
+                    %s
+                  </dependencies></dependencyManagement>
+                </project>
+                """.formatted(String.join("\n", tcnative));
+        String bom = """
+                <project>
+                  <groupId>io.quarkus</groupId>
+                  <artifactId>quarkus-bom</artifactId>
+                  <version>0.11.0</version>
+                  <properties><javax.el-impl.version>3.0.1-b08</javax.el-impl.version></properties>
+                  <dependencyManagement><dependencies>
+                    <dependency><groupId>org.glassfish.web</groupId><artifactId>el-impl</artifactId>
+                      <version>${el-impl.version}</version></dependency>
+                    <dependency><groupId>io.netty</groupId><artifactId>netty-bom</artifactId>
+                      <version>4.1.68.Final</version><type>pom</type><scope>import</scope></dependency>
+                  </dependencies></dependencyManagement>
+                </project>
+                """;
+        try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
+            Path cache = dir.resolve("cache");
+            cache(cache, "io.quarkus:quarkus-bom:0.11.0", bom);
+            Files.writeString(cache.resolve(MavenRepo.artifactPath("io.quarkus", "quarkus-bom", "0.11.0", "pom")
+                    + ".last-modified"), "2019-03-20T08:00:00Z\n", StandardCharsets.UTF_8);
+            cache(cache, "io.netty:netty-bom:4.1.68.Final", nettyBom);
+            SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
+
+            List<BomSnapshot> loaded = new ArrayList<>();
+            String log = log(() -> loaded.add(boms(cache, store, offline).load("0.11.0", false)));
+
+            assertEquals(7, loaded.getFirst().deps().size());
+            assertEquals(new ManagedDep("org.glassfish.web:el-impl", "${el-impl.version}"),
+                    loaded.getFirst().deps().getLast());
+            assertEquals(new ManagedDep("io.netty:netty-tcnative:windows-x86_64", "${tcnative.version}"),
+                    loaded.getFirst().deps().get(5));
+            List<String> warnings = log.lines().filter(line -> line.startsWith("warning: ")).toList();
+            assertEquals(List.of("warning: bom 0.11.0: 6 managed dependencies keep unresolved references: "
+                    + "${el-impl.version} (declared in io.quarkus:quarkus-bom:0.11.0): org.glassfish.web:el-impl; "
+                    + "${tcnative.version} (declared in io.netty:netty-bom:4.1.68.Final, imported through "
+                    + "io.netty:netty-bom:4.1.68.Final): io.netty:netty-tcnative, "
+                    + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
+                    + "neither the poms that declare them nor their parents define these properties (profiles that "
+                    + "depend on the machine are not applied); they are kept as written, as Maven keeps them"),
+                    warnings);
+            assertTrue(log.contains("bom 0.11.0: resolved from 2 poms (parents: ; imported BOMs: 1; entries "
+                    + "imported: 6)"), log);
+        }
+    }
+
+    /// Where Maven fails to build the model, so does the release, writing nothing.
+    @Test
+    void whatMavenFailsOnStillFailsTheRelease() throws Exception {
+        Map<String, String> boms = Map.of(
+                "an import version that keeps a reference", managedBom("""
+                        <dependency><groupId>io.netty</groupId><artifactId>netty-bom</artifactId>
+                          <version>${netty.version}</version><type>pom</type><scope>import</scope></dependency>"""),
+                "a parent version that keeps a reference", """
+                        <project><parent><groupId>io.quarkus</groupId><artifactId>quarkus-parent</artifactId>
+                          <version>${parent.version}</version></parent><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version></project>""",
+                "an import cycle", managedBom("""
+                        <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><type>pom</type><scope>import</scope></dependency>"""),
+                "a property reference cycle", """
+                        <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><properties><a>${b}</a><b>${a}</b></properties>
+                          <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId>
+                          <version>${a}</version></dependency></dependencies></dependencyManagement></project>""");
+        try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
+            for (Map.Entry<String, String> bom : boms.entrySet()) {
+                Path cache = dir.resolve("cache-" + bom.getKey().replace(' ', '-'));
+                cache(cache, "io.quarkus:quarkus-bom:1.0.0.Final", bom.getValue());
+                SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
+
+                String log = log(() -> assertThrows(IOException.class,
+                        () -> boms(cache, store, offline).load("1.0.0.Final", false), bom.getKey()));
+
+                assertFalse(store.exists("1.0.0.Final", SnapshotStore.BOM), bom.getKey());
+                assertFalse(log.contains("kept as written"), log);
+            }
+        }
+    }
+
+    private static String managedBom(String dependency) {
+        return "<project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId><version>1.0.0.Final"
+                + "</version><dependencyManagement><dependencies>" + dependency
+                + "</dependencies></dependencyManagement></project>";
     }
 
     @Test
@@ -239,7 +391,7 @@ class BomSnapshotsTest {
     }
 
     @Test
-    void aBomWithAReferenceThatIsNeverClosedWritesNothing() throws Exception {
+    void aReferenceThatIsNeverClosedIsKeptAsWrittenWithAWarning() throws Exception {
         String flattened = """
                 <project>
                   <groupId>io.quarkus</groupId>
@@ -253,14 +405,13 @@ class BomSnapshotsTest {
         try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
             cache(dir.resolve("cache"), "io.quarkus:quarkus-bom:2.4.1.Final", flattened);
             SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
-            BomSnapshots boms = new BomSnapshots(
-                    new MavenRepo(MavenRepo.CENTRAL, dir.resolve("cache"), offline, RemoteJar.Options.DEFAULT), store);
 
-            IOException e = assertThrows(IOException.class, () -> boms.load("2.4.1.Final", false));
+            String log = log(() -> boms(dir.resolve("cache"), store, offline).load("2.4.1.Final", false));
 
-            assertTrue(e.getMessage().contains("${oops (declared in io.quarkus:quarkus-bom:2.4.1.Final): "
-                    + "io.netty:netty-tcnative"), e.getMessage());
-            assertFalse(store.exists("2.4.1.Final", SnapshotStore.BOM));
+            assertEquals(List.of(new ManagedDep("io.netty:netty-tcnative", "2.0.45-${oops")),
+                    store.read("2.4.1.Final", SnapshotStore.BOM, BomSnapshot.class).deps());
+            assertTrue(log.contains("warning: bom 2.4.1.Final: 1 managed dependency keeps unresolved references: "
+                    + "${oops (declared in io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative;"), log);
         }
     }
 

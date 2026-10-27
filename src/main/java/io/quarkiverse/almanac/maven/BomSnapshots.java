@@ -59,19 +59,15 @@ public final class BomSnapshots {
 
     /// The BOM snapshot of a release: the existing snapshot (work folder, else the committed dataset) unless `force`,
     /// otherwise resolved from the (cached) BOM pom, its parents and imported BOMs ([BomResolver]) and written to the
-    /// work folder. An existing snapshot that keeps an unresolved `${...}` reference (written before the resolver
-    /// existed) is reused with a warning; `force` resolves it again, which then fails.
+    /// work folder. A version (or coordinates) with a `${...}` reference that no pom defines is kept as written, as in
+    /// Maven's effective model, with one warning that names the references and where they come from.
     ///
-    /// @throws IOException when the BOM cannot be resolved completely; nothing is written then
+    /// @throws IOException when the BOM pom, a parent or an imported BOM cannot be read, when a parent or an import
+    ///                     has no valid coordinates, or on a parent, import or property reference cycle; nothing is
+    ///                     written then
     public BomSnapshot load(String version, boolean force) throws IOException {
         Optional<BomSnapshot> existing = force ? Optional.empty() : existing(version);
         if (existing.isPresent()) {
-            List<ManagedDep> unresolved = existing.get().deps().stream().filter(BomSnapshots::unresolved).toList();
-            if (!unresolved.isEmpty()) {
-                Log.warn("bom %s: the existing snapshot keeps %d unresolved versions (%s: %s%s)", version,
-                        unresolved.size(), unresolved.getFirst().id(), unresolved.getFirst().v(),
-                        unresolved.size() > 1 ? ", ..." : "");
-            }
             Log.debug("bom %s: reusing snapshot", version);
             return existing.get();
         }
@@ -84,14 +80,10 @@ public final class BomSnapshots {
             Log.warn("bom %s: no Last-Modified date known", version);
         }
         BomResolver.Result result = resolve(version, pom.content());
-        BomSnapshot snapshot = new BomSnapshot(version, date, result.requireResolved().deps());
-        // a written snapshot never holds a reference, whatever the resolution reported
-        Optional<ManagedDep> left = snapshot.deps().stream().filter(BomSnapshots::unresolved).findFirst();
-        if (left.isPresent()) {
-            throw new IOException("the managed dependency " + left.get().id() + " " + left.get().v()
-                    + " keeps an unresolved reference");
-        }
+        BomSnapshot snapshot = new BomSnapshot(version, date, result.deps());
         store.write(version, SnapshotStore.BOM, snapshot);
+        result.describeUnresolved().ifPresent(unresolved ->
+                Log.warn("bom %s: %s; they are kept as written, as Maven keeps them", version, unresolved));
         long quarkus = snapshot.deps().stream().map(ManagedDep::id).filter(id -> id.startsWith(GROUP_ID + ":")).count();
         Log.info("bom %s: %d managed dependencies (%d io.quarkus), released %s", version, snapshot.deps().size(),
                 quarkus, date);
@@ -124,7 +116,8 @@ public final class BomSnapshots {
                 : Optional.empty();
     }
 
-    /// Whether a snapshot entry keeps a `${...}` reference other than the classifier placeholder.
+    /// Whether a snapshot entry keeps a `${...}` reference other than the classifier placeholder: one that Maven does
+    /// not resolve either, kept as written.
     public static boolean unresolved(ManagedDep dep) {
         return Objects.toString(dep.v(), "").contains("${")
                 || dep.id().replace(BomParser.QUARKUS_VERSION_PLACEHOLDER, "").contains("${");
