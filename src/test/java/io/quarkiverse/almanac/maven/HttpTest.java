@@ -63,7 +63,7 @@ class HttpTest {
             String path = exchange.getRequestURI().getPath();
             paths.add(path);
             boolean first = answeredOnce.compareAndSet(false, true);
-            if (path.startsWith("/stall")) {
+            if (path.startsWith("/stall-once") && first || path.startsWith("/stall-always")) {
                 // the headers and a part of the body, then nothing until the test ends
                 exchange.sendResponseHeaders(200, 20);
                 try (OutputStream out = exchange.getResponseBody()) {
@@ -213,7 +213,7 @@ class HttpTest {
     void aRefusalWithEightThreadsWaitingLetsNoOtherRequestOutInAnyCommand() throws Exception {
         List<Object> outcomes = new CopyOnWriteArrayList<>();
         long start = System.nanoTime();
-        try (Http http = new Http(8, false, Pacer.shared(Pacer.Pause.parse("0.3"), lockFile()), FAST)) {
+        try (Http http = new Http(8, false, Pacer.shared(Pacer.Pause.parse("0.5"), lockFile()), FAST)) {
             List<Thread> threads = new ArrayList<>();
             for (int t = 0; t < 8; t++) {
                 int id = t;
@@ -235,15 +235,15 @@ class HttpTest {
                 outcomes.toString());
         assertEquals(7, outcomes.stream().filter(Http.StoppedException.class::isInstance).count(),
                 outcomes.toString());
-        // seven pauses of 0.3 s would take 2.1 s
-        assertTrue(millisSince(start) < 1500, "the refused requests waited: " + millisSince(start) + " ms");
+        // seven pauses of 0.5 s would take 3.5 s
+        assertTrue(millisSince(start) < 2500, "the refused requests waited: " + millisSince(start) + " ms");
 
         // the other commands on this cache learn it from the stop marker, which holds for an hour
         Path stopFile = lockFile().resolveSibling(Pacer.STOP_FILE);
         assertAbout(Http.REFUSAL_STOP, stopUntil());
         assertTrue(Files.readAllLines(stopFile).get(1).startsWith("HTTP 403 for " + uri("/first-blocked/")));
-        long otherStart = System.nanoTime();
-        try (Http other = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.3"), lockFile()), FAST)) {
+        String nextStart = Files.readString(lockFile());
+        try (Http other = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.5"), lockFile()), FAST)) {
             Http.StoppedException refused =
                     assertThrows(Http.StoppedException.class, () -> other.get(uri("/ok/other-command")));
             assertTrue(refused.getMessage().contains(stopFile.toRealPath() + ": delete that file"),
@@ -251,7 +251,7 @@ class HttpTest {
             assertTrue(other.stopped());
             assertEquals(0, other.requestCount());
         }
-        assertTrue(millisSince(otherStart) < 1000, "refused without a pause: " + millisSince(otherStart) + " ms");
+        assertEquals(nextStart, Files.readString(lockFile()), "a refusal sends nothing, so it sets no next start");
         assertEquals(1, paths.size());
 
         // deleting the marker ends the stop for the commands that start afterwards
@@ -375,41 +375,70 @@ class HttpTest {
     }
 
     @Test
-    void aStalledResponseTimesOutAndLetsTheOtherRequestsGo() throws Exception {
-        Http.Timing timing = timing(Duration.ofMillis(300), Duration.ofSeconds(30), Duration.ofMillis(10),
+    void aStalledResponseIsCutOffAndLetsTheOtherRequestsGo() throws Exception {
+        Http.Timing timing = timing(Duration.ofSeconds(1), Duration.ofSeconds(30), Duration.ofMillis(10),
                 Duration.ofMillis(10), Duration.ofHours(1));
-        AtomicReference<Throwable> stalled = new AtomicReference<>();
-        long start = System.nanoTime();
+        AtomicReference<Object> stalled = new AtomicReference<>();
+        AtomicReference<Object> other = new AtomicReference<>();
         try (Http http = new Http(2, false, Pacer.shared(Pacer.Pause.parse("0.05"), lockFile()), timing)) {
-            Thread waiting = Thread.ofVirtual().start(() -> {
-                try {
-                    http.get(uri("/stall"));
-                } catch (Throwable e) {
-                    stalled.set(e);
+            Thread stalling = Thread.ofVirtual().start(() -> stalled.set(status(http, uri("/stall-once"))));
+            Thread meanwhile = null;
+            try {
+                while (paths.isEmpty()) {
+                    Thread.sleep(5);
                 }
-            });
-            while (paths.isEmpty()) {
-                Thread.sleep(5);
+                // the server holds its first answer until the end of the test: unless that exchange is cut off, it
+                // keeps the turn and no other request goes out
+                long start = System.nanoTime();
+                meanwhile = Thread.ofVirtual().start(() -> other.set(status(http, uri("/ok/meanwhile"))));
+                meanwhile.join(10_000);
+                assertEquals(200, other.get(), "the other request, after " + millisSince(start) + " ms");
+                stalling.join(10_000);
+                assertEquals(200, stalled.get(), "the second attempt gets the answer");
+            } finally {
+                release.countDown();
+                stalling.join(10_000);
+                if (meanwhile != null) {
+                    meanwhile.join(10_000);
+                }
             }
-            long other = System.nanoTime();
-            assertEquals(200, http.get(uri("/ok/meanwhile")).status());
-            assertTrue(millisSince(other) < 2000, "the other request waited " + millisSince(other) + " ms");
-            waiting.join(20_000);
-            assertFalse(waiting.isAlive());
-            release.countDown();
             assertFalse(http.stopped(), "a timeout is a network failure, not a stop");
-            assertEquals(7, http.requestCount());
+            assertEquals(3, http.requestCount());
         }
-        assertTrue(millisSince(start) < 10_000, millisSince(start) + " ms");
-        IOException failure = assertInstanceOf(IOException.class, stalled.get());
-        assertInstanceOf(HttpTimeoutException.class, failure.getCause(), failure.toString());
-        assertTrue(failure.getMessage().contains("no data for 0.3 s"), failure.getMessage());
-        assertEquals(6, paths.stream().filter("/stall"::equals).count(), paths.toString());
+        assertEquals(List.of("/ok/meanwhile", "/stall-once", "/stall-once"), paths.stream().sorted().toList());
+    }
+
+    @Test
+    void aResponseThatStallsAtEveryAttemptFailsWithATimeout() throws IOException {
+        Http.Timing timing = timing(Duration.ofMillis(400), Duration.ofSeconds(30), Duration.ofMillis(10),
+                Duration.ofMillis(10), Duration.ofHours(1));
+        try (Http http = new Http(1, false, Pacer.none(), timing)) {
+            try {
+                IOException failure = assertThrows(IOException.class, () -> http.get(uri("/stall-always")));
+                assertInstanceOf(HttpTimeoutException.class, failure.getCause(), failure.toString());
+                assertTrue(failure.getMessage().contains("failed after 6 attempts"), failure.getMessage());
+                assertTrue(failure.getMessage().contains("no data for 0.4 s"), failure.getMessage());
+                assertFalse(http.stopped());
+            } finally {
+                release.countDown();
+            }
+        }
+        assertEquals(6, paths.size(), paths.toString());
+    }
+
+    /// The status of a GET, or the exception it threw.
+    private static Object status(Http http, URI uri) {
+        try {
+            return http.get(uri).status();
+        } catch (IOException | RuntimeException e) {
+            return e;
+        }
     }
 
     @Test
     void anExchangeEndsAfterItsLimitHoweverSteadilyTheBodyArrives() throws IOException {
-        Http.Timing timing = timing(Duration.ofMillis(500), Duration.ofSeconds(1), Duration.ofMillis(10),
+        // the silence limit is far above the gaps between the body's bytes, so only the exchange limit cuts it off
+        Http.Timing timing = timing(Duration.ofSeconds(3), Duration.ofSeconds(1), Duration.ofMillis(10),
                 Duration.ofMillis(10), Duration.ofHours(1));
         long start = System.nanoTime();
         try (Http http = new Http(1, false, Pacer.none(), timing)) {
@@ -418,7 +447,8 @@ class HttpTest {
             assertEquals("status 200", new String(response.body(), StandardCharsets.UTF_8));
         }
         assertEquals(List.of("/trickle", "/trickle"), paths);
-        assertTrue(millisSince(start) >= 1000 && millisSince(start) < 4000, millisSince(start) + " ms");
+        // the trickle alone lasts 5 s
+        assertTrue(millisSince(start) >= 1000 && millisSince(start) < 4500, millisSince(start) + " ms");
     }
 
     @Test
@@ -430,24 +460,28 @@ class HttpTest {
             AtomicBoolean interrupted = new AtomicBoolean();
             Thread waiting = Thread.ofPlatform().start(() -> {
                 try {
-                    http.get(uri("/stall"));
+                    http.get(uri("/stall-always"));
                 } catch (Throwable e) {
                     failure.set(e);
                     interrupted.set(Thread.currentThread().isInterrupted());
                 }
             });
-            while (paths.size() < 2) {
-                Thread.sleep(5);
+            try {
+                while (paths.size() < 2) {
+                    Thread.sleep(5);
+                }
+                Thread.sleep(100);
+                waiting.interrupt();
+                waiting.join(10_000);
+            } finally {
+                release.countDown();
+                waiting.join(10_000);
             }
-            Thread.sleep(100);
-            waiting.interrupt();
-            waiting.join(10_000);
             assertInstanceOf(InterruptedIOException.class, failure.get());
             assertTrue(interrupted.get(), "the interrupt stays set");
             long after = Long.parseLong(Files.readString(lockFile()).strip());
             assertTrue(after > before, "the interrupted request set the next start: " + before + " then " + after);
             assertFalse(http.stopped());
-            release.countDown();
         }
     }
 
