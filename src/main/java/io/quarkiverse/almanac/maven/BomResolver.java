@@ -45,9 +45,12 @@ import java.util.regex.Pattern;
 ///
 /// Like Maven, a merge keeps the last of a pom's own entries with one key (Maven warns about such duplicates) and the
 /// first of the merged-in ones; a pom with neither parent entries nor imports keeps its list as written, and of
-/// entries with the same id the first counts. Parent, import and property reference cycles fail. A reference that
-/// no pom defines stays as written in a managed dependency, as in Maven's effective model: [Result#unresolved()] lists
-/// the entries that keep one, and [Result#describeUnresolved()] says where they come from.
+/// entries with the same id the first counts.
+///
+/// Where Maven fails to build the model, so does the resolution: parent, import and property reference cycles, and a
+/// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
+/// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
+/// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -200,17 +203,18 @@ public final class BomResolver {
     ///
     /// @param pom        the BOM pom
     /// @param bomVersion the release version, for the classifier placeholder of [BomParser#id]
-    /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, or on a
-    ///                     parent, import or property reference cycle
+    /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, on a parent,
+    ///                     import or property reference cycle, or when a managed dependency has no valid groupId and
+    ///                     artifactId
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
         Set<String> warnings = new LinkedHashSet<>(model.warnings());
         Map<String, Entry> byId = new TreeMap<>();
         for (Managed managed : model.managed()) {
-            if (managed.groupId() == null || managed.artifactId() == null || managed.version() == null) {
+            // Maven keeps it as well (it may manage a scope or exclusions), but there is no version to list
+            if (managed.version() == null) {
                 warnings.add(String.format(Locale.ROOT, "skipping incomplete managed dependency %s:%s (declared in %s)",
-                        Objects.requireNonNullElse(managed.groupId(), "?"),
-                        Objects.requireNonNullElse(managed.artifactId(), "?"), managed.origin()));
+                        managed.groupId(), managed.artifactId(), managed.origin()));
                 continue;
             }
             String id = BomParser.id(managed.groupId(), managed.artifactId(), managed.type(), managed.classifier(),
@@ -277,10 +281,14 @@ public final class BomResolver {
         }
         List<Managed> managed = new ArrayList<>();
         for (Managed raw : inherit(declared)) {
-            managed.add(new Managed(interpolator.apply(raw.groupId()), interpolator.apply(raw.artifactId()),
+            Managed entry = new Managed(interpolator.apply(raw.groupId()), interpolator.apply(raw.artifactId()),
                     interpolator.apply(raw.version()), blankToNull(interpolator.apply(raw.type())),
                     blankToNull(interpolator.apply(raw.classifier())), interpolator.apply(raw.scope()),
-                    raw.origin(), null));
+                    raw.origin(), null);
+            if (!entry.isImport()) {
+                requireValidIds(entry);
+            }
+            managed.add(entry);
         }
 
         List<String> profiles = new ArrayList<>();
@@ -348,6 +356,24 @@ public final class BomResolver {
         }
         return new Model(coordinates, List.copyOf(byKey.values()), List.copyOf(parents), List.copyOf(imported), poms,
                 List.copyOf(profiles), List.copyOf(warnings));
+    }
+
+    /// Fails, as Maven's validation of the effective model does, on a managed dependency whose groupId or artifactId
+    /// is missing or holds other characters than Maven's id characters, such as a reference that no pom defines. Import
+    /// entries are not managed dependencies: they are replaced by the BOMs they import.
+    private static void requireValidIds(Managed entry) throws IOException {
+        String[][] ids = {{"groupId", entry.groupId()}, {"artifactId", entry.artifactId()}};
+        for (String[] id : ids) {
+            if (id[1] == null || id[1].isEmpty()) {
+                throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s without %s, which Maven does not "
+                        + "accept", entry.origin(), orUnknown(entry.groupId()), orUnknown(entry.artifactId()), id[0]));
+            }
+            if (!ID.matcher(id[1]).matches()) {
+                throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s, whose %s %s is no valid Maven id%s",
+                        entry.origin(), entry.groupId(), entry.artifactId(), id[0], id[1],
+                        id[1].contains("${") ? " (it keeps a reference that no pom defines)" : ""));
+            }
+        }
     }
 
     private static List<Managed> managed(List<Pom.Dependency> dependencies, String origin) {
@@ -556,6 +582,10 @@ public final class BomResolver {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private static String orUnknown(String value) {
+        return value == null || value.isEmpty() ? "?" : value;
     }
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or

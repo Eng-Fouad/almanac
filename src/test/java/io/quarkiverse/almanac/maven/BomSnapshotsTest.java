@@ -24,7 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// [BomSnapshots] over an offline repository cache: a BOM that is not flattened is resolved with its parents and
 /// imports; a version that Maven cannot resolve either is kept as written with one warning, while what Maven fails on
-/// (a parent or an import that cannot be read or keeps a reference, a cycle) writes nothing.
+/// (a parent or an import that cannot be read or keeps a reference, a cycle, a managed dependency without a valid
+/// groupId) writes nothing.
 class BomSnapshotsTest {
 
     /// Shaped like the published Quarkus 1.x BOMs: a parent chain, properties and imported BOMs.
@@ -345,7 +346,12 @@ class BomSnapshotsTest {
                         <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
                           <version>1.0.0.Final</version><properties><a>${b}</a><b>${a}</b></properties>
                           <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId>
-                          <version>${a}</version></dependency></dependencies></dependencyManagement></project>""");
+                          <version>${a}</version></dependency></dependencies></dependencyManagement></project>""",
+                "a managed groupId that keeps a reference", managedBom("""
+                        <dependency><groupId>${unknown.group}</groupId><artifactId>art</artifactId>
+                          <version>1.0</version></dependency>"""),
+                "a managed dependency without groupId", managedBom("""
+                        <dependency><artifactId>art</artifactId><version>1.0</version></dependency>"""));
         try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
             for (Map.Entry<String, String> bom : boms.entrySet()) {
                 Path cache = dir.resolve("cache-" + bom.getKey().replace(' ', '-'));

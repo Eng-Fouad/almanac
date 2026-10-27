@@ -8,6 +8,7 @@ import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -407,23 +408,67 @@ class BomResolverTest {
                         dep("io.netty:netty-tcnative::osx-x86_64:${tcnative.version}"),
                         dep("io.netty:netty-tcnative::windows-x86_64:${tcnative.version}"),
                         dep("io.netty:netty-tcnative::linux-aarch_64:${tcnative.version}"),
-                        dep("${unknown.group}:art:1"),
+                        dep("org.acme:art:${art.type}::1"),
                         dep("io.netty:netty-common:4.1.69.Final")));
 
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE, bom);
 
         assertEquals("${tcnative.version}", versions(result).get("io.netty:netty-tcnative:linux-x86_64"));
-        assertEquals("1", versions(result).get("${unknown.group}:art"));
+        assertEquals("1", versions(result).get("org.acme:art:${art.type}"), "a type is kept as written too");
         assertEquals(7, result.deps().size());
         assertEquals(6, result.unresolved().size());
-        assertEquals(List.of("${tcnative.version}"), result.unresolved().getLast().unresolved());
-        assertEquals(Optional.of("6 managed dependencies keep unresolved references: ${tcnative.version} (declared in "
+        assertEquals(List.of("${tcnative.version}"), result.unresolved().getFirst().unresolved());
+        assertEquals(Optional.of("6 managed dependencies keep unresolved references: ${art.type} (declared in "
+                + "io.quarkus:quarkus-bom:2.4.1.Final): org.acme:art:${art.type}; ${tcnative.version} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, "
                 + "io.netty:netty-tcnative:linux-aarch_64, io.netty:netty-tcnative:linux-x86_64 and 2 more; "
-                + "${unknown.group} (declared in "
-                + "io.quarkus:quarkus-bom:2.4.1.Final): ${unknown.group}:art; neither the poms that declare them nor "
-                + "their parents define these properties (profiles that depend on the machine are not applied)"),
-                result.describeUnresolved());
+                + "neither the poms that declare them nor their parents define these properties (profiles that depend "
+                + "on the machine are not applied)"), result.describeUnresolved());
+    }
+
+    @Test
+    void failsOnAManagedDependencyWithoutAValidGroupIdOrArtifactIdAsMavenDoes() {
+        // Maven's validation of the effective model rejects them, also in an imported BOM and in a parent, and also
+        // without a version; a reference that no pom defines is no valid id either
+        Repo repo = new Repo()
+                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("${unknown.group}:x:1"), dep("g:y:1"))))
+                .add("g:parent:1", project("g:parent:1", managed(dep("g:${unknown.artifact}:1"))));
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", managed(dep("${unknown.group}:art:1"), dep("g:ok:1"))),
+                "g:bom:1 manages ${unknown.group}:art, whose groupId ${unknown.group} is no valid Maven id (it keeps "
+                        + "a reference that no pom defines)");
+        failures.put(project("g:bom:1", managed(dep("g:art${oops:1"))),
+                "g:bom:1 manages g:art${oops, whose artifactId art${oops is no valid Maven id (it keeps a reference "
+                        + "that no pom defines)");
+        failures.put(project("g:bom:1", managed(dep("g h:a:1"))),
+                "g:bom:1 manages g h:a, whose groupId g h is no valid Maven id");
+        failures.put(project("g:bom:1", managed("<dependency><artifactId>a</artifactId><version>1</version>"
+                        + "</dependency>")),
+                "g:bom:1 manages ?:a without groupId, which Maven does not accept");
+        failures.put(project("g:bom:1", properties("empty="), managed(dep("g:${empty}:1"))),
+                "g:bom:1 manages g:? without artifactId, which Maven does not accept");
+        failures.put(project("g:bom:1", properties("grp=${other"), managed(dep("${grp}:a:1"))),
+                "g:bom:1 manages ${other:a, whose groupId ${other is no valid Maven id (it keeps a reference that no "
+                        + "pom defines)");
+        failures.put(project("g:bom:1", managed("<dependency><groupId>${nope}</groupId><artifactId>a</artifactId>"
+                        + "</dependency>")),
+                "g:bom:1 manages ${nope}:a, whose groupId ${nope} is no valid Maven id (it keeps a reference that no "
+                        + "pom defines)");
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "org.imp:i:1 manages ${unknown.group}:x, whose groupId ${unknown.group} is no valid Maven id (it keeps "
+                        + "a reference that no pom defines)");
+        failures.put(project(":bom:", parent("g:parent:1")),
+                "g:parent:1 manages g:${unknown.artifact}, whose artifactId ${unknown.artifact} is no valid Maven id "
+                        + "(it keeps a reference that no pom defines)");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void anInvalidIdInAProfileThatIsNotActiveDoesNotMatter() throws IOException {
+        String bom = project("g:bom:1", managed(dep("g:x:1")), "<profiles>" + profile("off",
+                "<property><name>enable</name></property>", managed(dep("${nope}:a:1"))) + "</profiles>");
+        assertEquals(Map.of("g:x", "1"), versions(resolve(BomResolver.PomSource.NONE, bom)));
     }
 
     @Test

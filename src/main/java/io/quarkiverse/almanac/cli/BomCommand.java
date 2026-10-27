@@ -31,9 +31,10 @@ import java.util.concurrent.Callable;
 /// `bom`: writes `bom.json` snapshots of the releases the committed dataset does not have yet.
 @Command(name = "bom", description = "Write bom.json snapshots (managed dependency versions) of the releases the "
         + "dataset does not have yet. A BOM is resolved as Maven builds it: parents, properties and imported BOMs "
-        + "(read from the repository). A managed version (or coordinates) with a property reference that Maven "
-        + "cannot resolve either is kept as written, with a warning; a release whose parent or imported BOM cannot "
-        + "be read fails, as it does in Maven.")
+        + "(read from the repository). A managed version, type or classifier with a property reference that Maven "
+        + "cannot resolve either is kept as written, with a warning. A release fails where Maven fails: a parent or "
+        + "imported BOM that cannot be read or has no valid coordinates, a managed dependency without a valid groupId "
+        + "and artifactId, or a cycle.")
 public final class BomCommand implements Callable<Integer> {
 
     @Mixin

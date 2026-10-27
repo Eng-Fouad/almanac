@@ -59,12 +59,12 @@ public final class BomSnapshots {
 
     /// The BOM snapshot of a release: the existing snapshot (work folder, else the committed dataset) unless `force`,
     /// otherwise resolved from the (cached) BOM pom, its parents and imported BOMs ([BomResolver]) and written to the
-    /// work folder. A version (or coordinates) with a `${...}` reference that no pom defines is kept as written, as in
-    /// Maven's effective model, with one warning that names the references and where they come from.
+    /// work folder. A version, type or classifier with a `${...}` reference that no pom defines is kept as written, as
+    /// in Maven's effective model, with one warning that names the references and where they come from.
     ///
     /// @throws IOException when the BOM pom, a parent or an imported BOM cannot be read, when a parent or an import
-    ///                     has no valid coordinates, or on a parent, import or property reference cycle; nothing is
-    ///                     written then
+    ///                     has no valid coordinates, on a parent, import or property reference cycle, or when a managed
+    ///                     dependency has no valid groupId and artifactId; nothing is written then
     public BomSnapshot load(String version, boolean force) throws IOException {
         Optional<BomSnapshot> existing = force ? Optional.empty() : existing(version);
         if (existing.isPresent()) {
