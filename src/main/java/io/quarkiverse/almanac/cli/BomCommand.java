@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /// `bom`: writes `bom.json` snapshots of the releases the committed dataset does not have yet.
 @Command(name = "bom", description = "Write bom.json snapshots (managed dependency versions) of the releases the "
@@ -117,24 +118,28 @@ public final class BomCommand implements Callable<Integer> {
         }
         Log.info("bom: %d releases", versions.size());
         ReleaseRun run = new ReleaseRun("bom", workspace.repo().http(), versions.size());
-        List<Boolean> failures = Parallel.map(versions, workspace.concurrency(), version -> {
-            if (!run.mayStart()) {
-                return false;
+        AtomicInteger failed = new AtomicInteger();
+        Parallel.<QuarkusVersion, Void>map(versions, workspace.concurrency(), version -> {
+            if (run.mayStart()) {
+                try {
+                    boms.load(version.text(), force);
+                } catch (IOException e) {
+                    Log.error("bom %s: %s", version, e.getMessage());
+                    run.failed(e);
+                    failed.incrementAndGet();
+                } catch (RuntimeException e) {
+                    // one broken release must not stop the others
+                    Log.error("bom %s: %s", version, e);
+                    run.failed(e);
+                    failed.incrementAndGet();
+                }
             }
-            try {
-                boms.load(version.text(), force);
-                return false;
-            } catch (IOException e) {
-                Log.error("bom %s: %s", version, e.getMessage());
-                run.failed(e);
-                return true;
-            }
+            return null;
         });
-        long failed = failures.stream().filter(Boolean::booleanValue).count();
-        if (failed > 0) {
-            Log.error("bom: %d of %d releases failed", failed, versions.size());
+        if (failed.get() > 0) {
+            Log.error("bom: %d of %d releases failed", failed.get(), versions.size());
         }
-        return run.finish() && failed == 0;
+        return run.finish() && failed.get() == 0;
     }
 
     /// Prints how the managed dependencies resolved from `pomFile` differ from the release's snapshot, each difference
