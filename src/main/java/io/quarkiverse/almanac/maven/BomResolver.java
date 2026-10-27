@@ -52,7 +52,12 @@ import java.util.regex.Pattern;
 /// for the first) and the effective dependency management of imported BOMs is kept.
 public final class BomResolver {
 
-    private static final Pattern REFERENCE = Pattern.compile("\\$\\{[^}]*}");
+    /// A `${...}` reference, also one that is never closed (Maven keeps both as written).
+    private static final Pattern REFERENCE = Pattern.compile("\\$\\{[^}]*}?");
+    /// Maven's characters of a groupId or artifactId.
+    private static final Pattern ID = Pattern.compile("[A-Za-z0-9_.-]+");
+    /// A version without the characters Maven forbids in one (path separators and other reserved characters).
+    private static final Pattern VERSION = Pattern.compile("[^\\\\/:\"<>|?*\\s]+");
     private static final int EXAMPLES = 3;
 
     /// Where parents and imported BOMs come from.
@@ -194,8 +199,8 @@ public final class BomResolver {
     ///
     /// @param pom        the BOM pom
     /// @param bomVersion the release version, for the classifier placeholder of [BomParser#id]
-    /// @throws IOException when a parent or an imported BOM cannot be read, or on a parent, import or property
-    ///                     reference cycle
+    /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, or on a
+    ///                     parent, import or property reference cycle
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
         Set<String> warnings = new LinkedHashSet<>(model.warnings());
@@ -323,10 +328,9 @@ public final class BomResolver {
         Set<String> imported = new LinkedHashSet<>();
         for (Managed entry : imports) {
             String id = entry.coordinates();
-            if (entry.groupId() == null || entry.artifactId() == null || entry.version() == null
-                    || REFERENCE.matcher(id).find()) {
-                throw new IOException(entry.origin() + " imports " + id + ", whose coordinates are incomplete or "
-                        + "keep an unresolved reference");
+            if (!valid(entry.groupId(), entry.artifactId(), entry.version())) {
+                throw new IOException(entry.origin() + " imports " + id + ", whose coordinates are incomplete, keep "
+                        + "an unresolved reference or are no valid Maven coordinates");
             }
             if (chain.contains(id)) {
                 throw new IOException("the BOM imports form a cycle: " + String.join(" -> ", chain) + " -> " + id);
@@ -452,9 +456,9 @@ public final class BomResolver {
         for (Pom current = pom; current.parent() != null; ) {
             Pom.Coordinates coordinates = current.parent();
             String id = coordinates.toString();
-            if (coordinates.groupId() == null || coordinates.artifactId() == null || coordinates.version() == null
-                    || REFERENCE.matcher(id).find()) {
-                throw new IOException(child + " has an incomplete parent, or one with a property: " + id);
+            if (!valid(coordinates.groupId(), coordinates.artifactId(), coordinates.version())) {
+                throw new IOException(child + " has an incomplete parent, one with a property or one whose "
+                        + "coordinates are no valid Maven coordinates: " + id);
             }
             if (!seen.add(id)) {
                 throw new IOException("the parents form a cycle: " + String.join(" -> ", seen) + " -> " + id);
@@ -487,6 +491,16 @@ public final class BomResolver {
             }
         }
         return merged;
+    }
+
+    /// Whether a parent or an imported BOM can be looked up: complete, without a `${...}` reference, with Maven's id
+    /// characters and a version Maven accepts, and no `.` or `..` part, so that a pom cannot name a file outside the
+    /// repository folder.
+    private static boolean valid(String groupId, String artifactId, String version) {
+        return groupId != null && artifactId != null && version != null && ID.matcher(groupId).matches()
+                && ID.matcher(artifactId).matches() && VERSION.matcher(version).matches()
+                && !REFERENCE.matcher(version).find() && !artifactId.equals(".") && !artifactId.equals("..")
+                && !version.equals(".") && !version.equals("..");
     }
 
     /// The pom `groupId:artifactId:version`, read once.

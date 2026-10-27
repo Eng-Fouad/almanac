@@ -10,6 +10,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -84,6 +85,12 @@ public final class BomSnapshots {
         }
         BomResolver.Result result = resolve(version, pom.content());
         BomSnapshot snapshot = new BomSnapshot(version, date, result.requireResolved().deps());
+        // a written snapshot never holds a reference, whatever the resolution reported
+        Optional<ManagedDep> left = snapshot.deps().stream().filter(BomSnapshots::unresolved).findFirst();
+        if (left.isPresent()) {
+            throw new IOException("the managed dependency " + left.get().id() + " " + left.get().v()
+                    + " keeps an unresolved reference");
+        }
         store.write(version, SnapshotStore.BOM, snapshot);
         long quarkus = snapshot.deps().stream().map(ManagedDep::id).filter(id -> id.startsWith(GROUP_ID + ":")).count();
         Log.info("bom %s: %d managed dependencies (%d io.quarkus), released %s", version, snapshot.deps().size(),
@@ -119,6 +126,7 @@ public final class BomSnapshots {
 
     /// Whether a snapshot entry keeps a `${...}` reference other than the classifier placeholder.
     public static boolean unresolved(ManagedDep dep) {
-        return dep.v().contains("${") || dep.id().replace(BomParser.QUARKUS_VERSION_PLACEHOLDER, "").contains("${");
+        return Objects.toString(dep.v(), "").contains("${")
+                || dep.id().replace(BomParser.QUARKUS_VERSION_PLACEHOLDER, "").contains("${");
     }
 }

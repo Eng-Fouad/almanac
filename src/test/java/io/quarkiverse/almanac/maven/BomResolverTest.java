@@ -543,6 +543,200 @@ class BomResolverTest {
     }
 
     @Test
+    void comparesKeysAsWrittenWhenInheritingAndInterpolatedWhenImporting() throws IOException {
+        // the child's ${project.groupId}:a and the parent's g:a are two entries until interpolation; merging the
+        // imports then keeps the last of them, the parent's, while a pom without imports keeps both, the first
+        // counting
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", managed(dep("g:a:from-parent"))))
+                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:b:1"))));
+
+        assertEquals(Map.of("g:a", "from-child"), versions(resolve(repo, project(":bom:", parent("g:parent:1"),
+                managed(dep("${project.groupId}:a:from-child"))))));
+        assertEquals(Map.of("g:a", "from-parent", "g:b", "1"), versions(resolve(repo, project(":bom:",
+                parent("g:parent:1"), managed(dep("${project.groupId}:a:from-child"), bomImport("org.imp:i:1"))))));
+    }
+
+    @Test
+    void anExplicitJarTypeIsTheDefaultKeyButATestJarAndATestsClassifierAreNot() throws IOException {
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", managed(dep("g:a:parent"),
+                dep("g:t:test-jar:tests:parent-tests"), dep("g:t::tests:parent-jar-tests"),
+                dep("g:t:test-jar::parent-test-jar"))));
+        String bom = project(":bom:", parent("g:parent:1"),
+                managed(dep("g:a:jar::child"), dep("g:t:test-jar::child-test-jar")));
+
+        assertEquals(Map.of("g:a", "child", "g:t:test-jar", "child-test-jar", "g:t:test-jar:tests", "parent-tests",
+                "g:t:tests", "parent-jar-tests"), versions(resolve(repo, bom)));
+    }
+
+    @Test
+    void importsInTheOrderOfTheMergedModelOwnThenProfileThenParent() throws IOException {
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", managed(bomImport("org.imp:c:1"))))
+                .add("org.imp:a:1", project("org.imp:a:1", managed(dep("x:ab:a"), dep("x:ac:a"))))
+                .add("org.imp:b:1", project("org.imp:b:1", managed(dep("x:ab:b"), dep("x:bc:b"))))
+                .add("org.imp:c:1", project("org.imp:c:1", managed(dep("x:ac:c"), dep("x:bc:c"), dep("x:c:c"))));
+        String bom = project(":bom:", parent("g:parent:1"), managed(bomImport("org.imp:a:1")), "<profiles>"
+                + profile("on", "<property><name>!off</name></property>", managed(bomImport("org.imp:b:1")))
+                + "</profiles>");
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals(Map.of("x:ab", "a", "x:ac", "a", "x:bc", "b", "x:c", "c"), versions(result));
+        assertEquals(List.of("org.imp:a:1", "org.imp:b:1", "org.imp:c:1"), result.imports());
+    }
+
+    @Test
+    void anImportedBomIsCompleteWithItsOwnImportsBeforeTheNextImport() throws IOException {
+        Repo repo = new Repo()
+                .add("org.imp:first:1", project("org.imp:first:1",
+                        managed(bomImport("org.imp:nested:1"), dep("x:own:first-own"))))
+                .add("org.imp:nested:1", project("org.imp:nested:1",
+                        managed(dep("x:deep:nested"), dep("x:own:nested"))))
+                .add("org.imp:second:1", project("org.imp:second:1", managed(dep("x:deep:second"), dep("x:s:second"))));
+        String bom = project("g:bom:1", managed(bomImport("org.imp:first:1"), bomImport("org.imp:second:1")));
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals(Map.of("x:deep", "nested", "x:own", "first-own", "x:s", "second"), versions(result),
+                "a nested import of the first import beats the second import, and loses to its importer's own entry");
+        assertEquals(List.of("org.imp:first:1", "org.imp:nested:1", "org.imp:second:1"), result.imports());
+    }
+
+    @Test
+    void anImportedBomIsBuiltInItsOwnContextWithItsParents() throws IOException {
+        Repo repo = new Repo()
+                .add("org.imp:child:7", project(":child:7", parent("org.imp:imp-parent:3")))
+                .add("org.imp:imp-parent:3", project(":imp-parent:3", parent("org.imp:imp-grand:2"),
+                        managed(dep("x:pv:${project.version}"), dep("x:parentv:${project.parent.version}"),
+                                dep("x:lib:${lib.version}"), dep("${project.groupId}:${project.artifactId}-x:1"))))
+                .add("org.imp:imp-grand:2", project("org.imp:imp-grand:2",
+                        properties("lib.version=${chain.a}", "chain.a=${chain.b}-a",
+                                "chain.b=grand-${project.artifactId}")));
+        String bom = project("g:bom:1", properties("lib.version=importer"), managed(bomImport("org.imp:child:7")));
+
+        assertEquals(Map.of("x:pv", "7", "x:parentv", "3", "x:lib", "grand-child-a", "org.imp:child-x", "1"),
+                versions(resolve(repo, bom)), "the importer's properties do not reach the imported BOM");
+    }
+
+    @Test
+    void activeByDefaultIsDecidedForEachPomOfTheLineage() throws IOException {
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("q=parent", "p=parent"),
+                "<profiles>" + profile("default", "<activeByDefault>true</activeByDefault>",
+                        properties("q=parent-default"), managed(dep("x:pd:parent-default"))) + "</profiles>"));
+        String bom = project(":bom:", parent("g:parent:1"), properties("p=own"),
+                managed(dep("x:p:${p}"), dep("x:q:${q}")), "<profiles>"
+                        + profile("default", "<activeByDefault>true</activeByDefault>", properties("p=child-default"))
+                        + profile("on", "<property><name>!off</name></property>", properties("q=child-on"))
+                        + "</profiles>");
+
+        assertEquals(Map.of("x:p", "own", "x:pd", "parent-default", "x:q", "child-on"), versions(resolve(repo, bom)));
+    }
+
+    @Test
+    void anImportedBomKeepsTheFirstOfItsDuplicates() throws IOException {
+        Repo repo = new Repo().add("org.imp:dups:1", project("org.imp:dups:1",
+                managed(dep("x:imp:first"), dep("x:imp:last"))));
+        String bom = project("g:bom:1", managed(dep("x:own:first"), dep("x:own:last"), bomImport("org.imp:dups:1")));
+
+        assertEquals(Map.of("x:imp", "first", "x:own", "last"), versions(resolve(repo, bom)));
+    }
+
+    @Test
+    void aProfileEntryReplacesThePomsOwnEntryInPlace() throws IOException {
+        Repo repo = new Repo().add("org.imp:i:1", project("org.imp:i:1", managed(dep("x:y:import"))));
+        String bom = project("g:bom:1", managed(dep("x:y:own"), bomImport("org.imp:i:1")), "<profiles>"
+                + profile("on", "<property><name>flag</name><value>!x</value></property>", managed(dep("x:y:profile")))
+                + "</profiles>");
+
+        assertEquals(Map.of("x:y", "profile"), versions(resolve(repo, bom)));
+    }
+
+    @Test
+    void importsOnlyPomTypeEntriesOfImportScopeWhateverTheirClassifier() throws IOException {
+        Repo repo = new Repo().add("org.imp:j:1", project("org.imp:j:1", managed(dep("x:from-j:1"))));
+        String bom = project("g:bom:1", managed(
+                "<dependency><groupId>org.imp</groupId><artifactId>i</artifactId><version>1</version>"
+                        + "<type>pom</type><scope>test</scope></dependency>",
+                "<dependency><groupId>org.imp</groupId><artifactId>j</artifactId><version>1</version>"
+                        + "<type>pom</type><classifier>c</classifier><scope>import</scope></dependency>"));
+
+        assertEquals(Map.of("org.imp:i:pom", "1", "x:from-j", "1"), versions(resolve(repo, bom)));
+        assertEquals(0, repo.reads("org.imp:i:1"));
+    }
+
+    @Test
+    void anImportVersionCanComeFromAPropertyOnlyTheGrandparentDefines() throws IOException {
+        Repo repo = new Repo()
+                .add("g:parent:1", project(":parent:", parent("g:grand:1")))
+                .add("g:grand:1", project("g:grand:1", properties("imp.version=2")))
+                .add("org.imp:i:2", project("org.imp:i:2", managed(dep("x:from-i:${project.version}"))));
+        String bom = project(":bom:", parent("g:parent:1"), managed(bomImport("org.imp:i:${imp.version}")));
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals(Map.of("x:from-i", "2"), versions(result));
+        assertEquals("g:bom:1", result.coordinates());
+        assertEquals(List.of("g:parent:1", "g:grand:1"), result.parents());
+    }
+
+    @Test
+    void followsAParentByItsCoordinatesNotByItsRelativePath() throws IOException {
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("from.parent=repository")));
+        String bom = project(":bom:", "<parent><groupId>g</groupId><artifactId>parent</artifactId><version>1</version>"
+                + "<relativePath>../../pom.xml</relativePath></parent>", managed(dep("x:y:${from.parent}")));
+
+        assertEquals(Map.of("x:y", "repository"), versions(resolve(repo, bom)));
+    }
+
+    @Test
+    void failsOnAnImportCycleThroughAParentsImport() {
+        Repo repo = new Repo()
+                .add("org.imp:a:1", project(":a:", parent("org.imp:a-parent:1")))
+                .add("org.imp:a-parent:1", project("org.imp:a-parent:1", managed(bomImport("g:bom:1"))))
+                .add("g:bom:1", project("g:bom:1", managed(bomImport("org.imp:a:1"))));
+        IOException e = assertThrows(IOException.class,
+                () -> resolve(repo, project("g:bom:1", managed(bomImport("org.imp:a:1")))));
+        assertEquals("the BOM imports form a cycle: g:bom:1 -> org.imp:a:1 -> g:bom:1", e.getMessage());
+    }
+
+    @Test
+    void failsWhenTheParentOfAnImportedBomIsMissing() {
+        Repo repo = new Repo().add("org.imp:a:1", project(":a:", parent("org.imp:gone:1")));
+        IOException e = assertThrows(IOException.class,
+                () -> resolve(repo, project("g:bom:1", managed(bomImport("org.imp:a:1"), dep("x:y:1")))));
+        assertEquals("the parent org.imp:gone:1 of org.imp:a:1 is not in the repository", e.getMessage());
+    }
+
+    @Test
+    void aReferenceThatIsNeverClosedIsUnresolved() throws IOException {
+        BomResolver.Result result = resolve(BomResolver.PomSource.NONE,
+                project("g:bom:1", managed(dep("x:y:1.0-${oops"), dep("x:z:1"))));
+        assertEquals(List.of("${oops"), result.unresolved().getFirst().unresolved());
+        assertThrows(IOException.class, result::requireResolved);
+    }
+
+    @Test
+    void refusesParentsAndImportsWhoseCoordinatesWouldLeaveTheRepositoryFolder() {
+        Repo repo = new Repo();
+        for (String coordinates : List.of("g:..:..", "g:a:../../x", "g:a:..\\..\\x", "g:a b:1", "g:a:1 2", "g:a:c:d")) {
+            String[] parts = coordinates.split(":", 3);
+            String parentElement = "<parent><groupId>" + parts[0] + "</groupId><artifactId>" + parts[1]
+                    + "</artifactId><version>" + parts[2] + "</version></parent>";
+            IOException parent = assertThrows(IOException.class,
+                    () -> resolve(repo, project("g:bom:1", parentElement)), coordinates);
+            assertTrue(parent.getMessage().contains("no valid Maven coordinates"), parent.getMessage());
+            String importElement = "<dependency><groupId>" + parts[0] + "</groupId><artifactId>" + parts[1]
+                    + "</artifactId><version>" + parts[2] + "</version><type>pom</type><scope>import</scope>"
+                    + "</dependency>";
+            IOException imported = assertThrows(IOException.class,
+                    () -> resolve(repo, project("g:bom:1", managed(importElement))), coordinates);
+            assertTrue(imported.getMessage().contains("no valid Maven coordinates"), imported.getMessage());
+        }
+        assertEquals(Map.of(), repo.reads);
+    }
+
+    @Test
     void readsEachPomOnceAcrossBomsAndThreads() throws Exception {
         Repo repo = new Repo()
                 .add("g:parent:1", project("g:parent:1", properties("x.version=1"), managed(dep("g:p:1"))))

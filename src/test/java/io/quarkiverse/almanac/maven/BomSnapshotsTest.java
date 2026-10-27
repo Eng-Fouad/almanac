@@ -216,10 +216,61 @@ class BomSnapshotsTest {
     }
 
     @Test
+    void aBomWhoseParentOrImportIsMissingWritesNothing() throws Exception {
+        try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
+            for (String missing : List.of("io.quarkus:quarkus-parent:1.0.0.Final", "io.netty:netty-bom:4.1.42.Final")) {
+                Path cache = dir.resolve("cache-" + missing.replace(':', '-'));
+                cacheUnflattened(cache);
+                String[] parts = missing.split(":");
+                Path pom = cache.resolve(MavenRepo.artifactPath(parts[0], parts[1], parts[2], "pom"));
+                Files.delete(pom);
+                Files.writeString(pom.resolveSibling(pom.getFileName() + ".404"), "");
+                SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
+                BomSnapshots boms = new BomSnapshots(
+                        new MavenRepo(MavenRepo.CENTRAL, cache, offline, RemoteJar.Options.DEFAULT), store);
+
+                IOException e = assertThrows(IOException.class, () -> boms.load("1.0.0.Final", false));
+
+                assertTrue(e.getMessage().contains(missing) && e.getMessage().endsWith("is not in the repository"),
+                        e.getMessage());
+                assertFalse(store.exists("1.0.0.Final", SnapshotStore.BOM));
+            }
+        }
+    }
+
+    @Test
+    void aBomWithAReferenceThatIsNeverClosedWritesNothing() throws Exception {
+        String flattened = """
+                <project>
+                  <groupId>io.quarkus</groupId>
+                  <artifactId>quarkus-bom</artifactId>
+                  <version>2.4.1.Final</version>
+                  <dependencyManagement><dependencies><dependency>
+                    <groupId>io.netty</groupId><artifactId>netty-tcnative</artifactId><version>2.0.45-${oops</version>
+                  </dependency></dependencies></dependencyManagement>
+                </project>
+                """;
+        try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
+            cache(dir.resolve("cache"), "io.quarkus:quarkus-bom:2.4.1.Final", flattened);
+            SnapshotStore store = new SnapshotStore(dir.resolve("snapshots"), null);
+            BomSnapshots boms = new BomSnapshots(
+                    new MavenRepo(MavenRepo.CENTRAL, dir.resolve("cache"), offline, RemoteJar.Options.DEFAULT), store);
+
+            IOException e = assertThrows(IOException.class, () -> boms.load("2.4.1.Final", false));
+
+            assertTrue(e.getMessage().contains("${oops (declared in io.quarkus:quarkus-bom:2.4.1.Final): "
+                    + "io.netty:netty-tcnative"), e.getMessage());
+            assertFalse(store.exists("2.4.1.Final", SnapshotStore.BOM));
+        }
+    }
+
+    @Test
     void tellsUnresolvedSnapshotEntries() {
         assertTrue(BomSnapshots.unresolved(new ManagedDep("io.netty:netty-tcnative", "${tcnative.version}")));
         assertTrue(BomSnapshots.unresolved(new ManagedDep("${group}:a", "1")));
         assertFalse(BomSnapshots.unresolved(
                 new ManagedDep("io.quarkus:quarkus-bom-quarkus-platform-descriptor:json:${quarkus.version}", "1")));
+        assertTrue(BomSnapshots.unresolved(new ManagedDep("io.netty:netty-tcnative", "2.0.45-${oops")));
+        assertFalse(BomSnapshots.unresolved(new ManagedDep("io.netty:netty-tcnative", null)));
     }
 }
