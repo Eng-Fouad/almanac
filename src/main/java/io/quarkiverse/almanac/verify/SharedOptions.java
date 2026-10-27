@@ -26,7 +26,10 @@ record SharedOptions(Path work, URI repo, int concurrency, Pacer.Pause pause, bo
     }
 
     /// A client that waits its turn with the other commands on the same cache.
+    ///
+    /// @throws IllegalArgumentException when the pause is too short for the repository ([Http#checkPause])
     Http http() {
+        Http.checkPause(pause, repo);
         return new Http(concurrency, offline, Pacer.forCache(pause, cache()));
     }
 

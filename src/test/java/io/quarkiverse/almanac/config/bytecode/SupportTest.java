@@ -1,14 +1,19 @@
 package io.quarkiverse.almanac.config.bytecode;
 
 import io.quarkiverse.almanac.config.JarSource;
+import io.quarkiverse.almanac.maven.Http;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// The reader's helpers: third-party jar candidates, Javadoc texts, generic type names, model formats.
@@ -58,7 +63,7 @@ class SupportTest {
     }
 
     @Test
-    void findsClassesOnlyInCandidateJars() {
+    void findsClassesOnlyInCandidateJars() throws IOException {
         TestJar core = TestJar.of("io.vertx", "vertx-core", "4.5.1").with("io/vertx/core/http/ClientAuth.class",
                 new byte[] {1, 2});
         TestJar other = TestJar.of("org.acme", "acme", "1.0").with("io/vertx/core/http/ClientAuth.class",
@@ -70,6 +75,64 @@ class SupportTest {
         assertTrue(libraries.find("org/acme/Missing").isEmpty());
         assertEquals(1, other.probes());
         assertTrue(libraries.warnings().isEmpty());
+    }
+
+    @Test
+    void skipsUnreadableJarsButNotRefusedRequests() throws IOException {
+        TestJar later = TestJar.of("io.vertx", "vertx-core-extra", "4.5.1").with("io/vertx/core/http/ClientAuth.class",
+                new byte[] {1});
+        LibraryClasses unreadable = new LibraryClasses(List.of(failing(new IOException("corrupt jar")), later));
+        assertEquals("vertx-core-extra", unreadable.find("io/vertx/core/http/ClientAuth").orElseThrow().jar()
+                .artifactId());
+        assertEquals(1, unreadable.warnings().size(), unreadable.warnings().toString());
+
+        // a refused request says nothing about the jar: the class is unknown, not missing
+        LibraryClasses refused = new LibraryClasses(List.of(failing(new Http.StoppedException("requests stopped")),
+                later));
+        int probes = later.probes();
+        assertThrows(Http.StoppedException.class, () -> refused.find("io/vertx/core/http/ClientAuth"));
+        assertEquals(probes, later.probes(), "the search ended at the refused jar");
+        assertTrue(refused.warnings().isEmpty());
+    }
+
+    /// `io.vertx:vertx-core`, every read of which fails with `failure`.
+    private static JarSource failing(IOException failure) {
+        return new JarSource() {
+            @Override
+            public String groupId() {
+                return "io.vertx";
+            }
+
+            @Override
+            public String artifactId() {
+                return "vertx-core";
+            }
+
+            @Override
+            public String version() {
+                return "4.5.1";
+            }
+
+            @Override
+            public boolean exists() throws IOException {
+                throw failure;
+            }
+
+            @Override
+            public Set<String> entryNames() throws IOException {
+                throw failure;
+            }
+
+            @Override
+            public boolean contains(String entry) throws IOException {
+                throw failure;
+            }
+
+            @Override
+            public Optional<byte[]> read(String entry) throws IOException {
+                throw failure;
+            }
+        };
     }
 
     @Test
