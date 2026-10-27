@@ -99,33 +99,40 @@ public final class BomCommand implements Callable<Integer> {
         return missing;
     }
 
-    /// Writes the BOM snapshots of the given releases into the work folder; false when any release failed.
+    /// Writes the BOM snapshots of the given releases into the work folder; false when any release failed or was not
+    /// attempted.
     static boolean writeSnapshots(Workspace workspace, List<QuarkusVersion> versions, boolean force)
             throws IOException {
         return writeSnapshots(workspace, workspace.boms(), versions, force);
     }
 
-    /// Writes the BOM snapshots of the given releases in parallel; false when any release failed.
+    /// Writes the BOM snapshots of the given releases in parallel, until requests stop ([ReleaseRun]); false when any
+    /// release failed or was not attempted.
     static boolean writeSnapshots(Workspace workspace, BomSnapshots boms, List<QuarkusVersion> versions, boolean force)
             throws IOException {
         if (versions.isEmpty()) {
             return true;
         }
         Log.info("bom: %d releases", versions.size());
-        List<Boolean> results = Parallel.map(versions, workspace.concurrency(), version -> {
-            try {
-                boms.load(version.text(), force);
-                return true;
-            } catch (IOException e) {
-                Log.error("bom %s: %s", version, e.getMessage());
+        ReleaseRun run = new ReleaseRun("bom", workspace.repo().http(), versions.size());
+        List<Boolean> failures = Parallel.map(versions, workspace.concurrency(), version -> {
+            if (!run.mayStart()) {
                 return false;
             }
+            try {
+                boms.load(version.text(), force);
+                return false;
+            } catch (IOException e) {
+                Log.error("bom %s: %s", version, e.getMessage());
+                run.failed(e);
+                return true;
+            }
         });
-        long failed = results.stream().filter(ok -> !ok).count();
+        long failed = failures.stream().filter(Boolean::booleanValue).count();
         if (failed > 0) {
             Log.error("bom: %d of %d releases failed", failed, versions.size());
         }
-        return failed == 0;
+        return run.finish() && failed == 0;
     }
 
     /// Prints how the managed dependencies resolved from `pomFile` differ from the release's snapshot, each difference

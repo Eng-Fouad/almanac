@@ -65,23 +65,28 @@ public final class ExtensionsCommand implements Callable<Integer> {
         return missing;
     }
 
-    /// Writes the snapshots of the given releases one after the other (one catalog request each); false when any
-    /// release got no snapshot.
+    /// Writes the snapshots of the given releases one after the other (one catalog request each), until requests stop
+    /// ([ReleaseRun]); false when any release got no snapshot or was not attempted.
     static boolean write(Workspace workspace, SnapshotStore target, List<QuarkusVersion> versions, boolean force) {
         if (versions.isEmpty()) {
             return true;
         }
         Log.info("extensions: %d releases, from their extension catalogs into %s", versions.size(), target.root());
         ExtensionCatalogs catalogs = new ExtensionCatalogs(workspace.repo(), target);
+        ReleaseRun run = new ReleaseRun("extensions", workspace.repo().http(), versions.size());
         List<String> withoutCatalog = new ArrayList<>();
         int failed = 0;
         for (QuarkusVersion version : versions) {
+            if (!run.mayStart()) {
+                continue;
+            }
             try {
                 if (!catalogs.write(version.text(), force)) {
                     withoutCatalog.add(version.text());
                 }
             } catch (IOException e) {
                 Log.error("extensions %s: %s", version, e.getMessage());
+                run.failed(e);
                 failed++;
             }
         }
@@ -92,6 +97,6 @@ public final class ExtensionsCommand implements Callable<Integer> {
         if (failed > 0) {
             Log.error("extensions: %d of %d releases failed", failed, versions.size());
         }
-        return failed == 0 && withoutCatalog.isEmpty();
+        return run.finish() && failed == 0 && withoutCatalog.isEmpty();
     }
 }
