@@ -1,0 +1,18 @@
+package com.acme;
+
+import io.quarkus.runtime.annotations.ConfigDocDefault;
+
+/** Parses only at a language level with pattern matching for switch (Java 21). */
+public interface Modern {
+
+    @ConfigDocDefault("modern")
+    String value();
+
+    static String describe(Object value) {
+        return switch (value) {
+            case String text when text.isEmpty() -> "empty";
+            case String text -> text;
+            default -> "other";
+        };
+    }
+}

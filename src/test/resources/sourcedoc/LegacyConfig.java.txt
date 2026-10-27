@@ -1,0 +1,56 @@
+package com.acme.legacy;
+
+import io.quarkus.runtime.annotations.ConfigDocDefault;
+import io.quarkus.runtime.annotations.ConfigDocMapKey;
+import io.quarkus.runtime.annotations.ConfigDocSection;
+import io.quarkus.runtime.annotations.ConfigGroup;
+
+import java.util.Map;
+import java.util.Optional;
+
+/** A legacy config root: its members are fields. */
+public class LegacyConfig {
+
+    private static final String DEFAULT_IMAGE = "image:" + Version.TAG;
+
+    @ConfigDocDefault(DEFAULT_IMAGE)
+    public String image;
+
+    @ConfigDocMapKey("datasource-name")
+    public Map<String, Group> named;
+
+    @ConfigDocSection
+    public Group group;
+
+    public int first, second;
+
+    public Optional<SecondaryGroup> secondary;
+
+    /** A field and a method of the same name: config readers ask for the field. */
+    public String both;
+
+    @ConfigDocDefault("method")
+    public String both() {
+        return both;
+    }
+
+    @ConfigGroup
+    public static class Group {
+
+        @ConfigDocDefault("in group")
+        public String value;
+    }
+
+    static final class Version {
+
+        static final String TAG = "1." + 0;
+    }
+}
+
+/** A group declared as a second top-level class: its class file names LegacyConfig.java as its source. */
+@ConfigGroup
+class SecondaryGroup {
+
+    @ConfigDocMapKey("secondary-key")
+    public Map<String, String> entries;
+}

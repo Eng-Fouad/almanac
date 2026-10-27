@@ -1,0 +1,21 @@
+package com.acme;
+
+import com.other.ConfigDocDefault;
+import io.quarkus.runtime.annotations.ConfigDocMapKey;
+
+import java.util.Map;
+
+import static com.acme.Constants.STATIC_IMPORTED;
+
+/** Values the sources of one file cannot resolve, and an annotation that only shares the simple name. */
+public interface Unresolved {
+
+    @io.quarkus.runtime.annotations.ConfigDocDefault(Constants.REMOTE)
+    String remote();
+
+    @ConfigDocMapKey(STATIC_IMPORTED)
+    Map<String, String> staticImport();
+
+    @ConfigDocDefault("foreign")
+    String foreign();
+}

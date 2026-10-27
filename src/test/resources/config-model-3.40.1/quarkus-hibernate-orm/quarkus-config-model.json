@@ -1,0 +1,237 @@
+{
+  "configRoots": [
+    {
+      "extension": {
+        "artifactId": "quarkus-hibernate-orm",
+        "detected": true,
+        "groupId": "io.quarkus",
+        "guideUrl": "https://quarkus.io/guides/hibernate-orm",
+        "name": "Hibernate ORM",
+        "nameSource": "EXTENSION_METADATA"
+      },
+      "items": [
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "additionalPaths": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+              "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__ACTIVE",
+              "property": "quarkus.hibernate-orm.\"persistence-unit-name\".active"
+            }
+          ],
+          "defaultValue": "`true` if Hibernate ORM is enabled and there are entity types or an active datasource assigned to the persistence unit; `false` otherwise",
+          "escapeDefaultValue": true,
+          "optional": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_HIBERNATE_ORM_ACTIVE",
+            "property": "quarkus.hibernate-orm.active"
+          },
+          "phase": "RUN_TIME",
+          "sourceElementName": "active",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit",
+          "type": "java.lang.Boolean",
+          "typeDescription": "boolean",
+          "withinMap": true
+        },
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection",
+          "items": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+              "enum": true,
+              "additionalPaths": [
+                {
+                  "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                  "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__SCHEMA_MANAGEMENT_STRATEGY",
+                  "property": "quarkus.hibernate-orm.\"persistence-unit-name\".schema-management.strategy"
+                }
+              ],
+              "defaultValue": "none",
+              "enumAcceptedValues": {
+                "qualifiedName": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateGenerationStrategy",
+                "values": {
+                  "CREATE": {
+                    "configValue": "create"
+                  },
+                  "DROP": {
+                    "configValue": "drop"
+                  },
+                  "DROP_AND_CREATE": {
+                    "configValue": "drop-and-create"
+                  },
+                  "NONE": {
+                    "configValue": "none"
+                  },
+                  "UPDATE": {
+                    "configValue": "update"
+                  },
+                  "VALIDATE": {
+                    "configValue": "validate"
+                  }
+                }
+              },
+              "escapeDefaultValue": true,
+              "path": {
+                "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                "environmentVariable": "QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_STRATEGY",
+                "property": "quarkus.hibernate-orm.schema-management.strategy"
+              },
+              "phase": "RUN_TIME",
+              "sourceElementName": "strategy",
+              "sourceElementType": "METHOD",
+              "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitSchemaManagement",
+              "type": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateGenerationStrategy",
+              "typeDescription": "HibernateGenerationStrategy",
+              "withinMap": true
+            },
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+              "additionalPaths": [
+                {
+                  "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                  "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__SCHEMA_MANAGEMENT_CREATE_SCHEMAS",
+                  "property": "quarkus.hibernate-orm.\"persistence-unit-name\".schema-management.create-schemas"
+                }
+              ],
+              "defaultValue": "false",
+              "escapeDefaultValue": true,
+              "path": {
+                "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                "environmentVariable": "QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_CREATE_SCHEMAS",
+                "property": "quarkus.hibernate-orm.schema-management.create-schemas"
+              },
+              "phase": "RUN_TIME",
+              "sourceElementName": "createSchemas",
+              "sourceElementType": "METHOD",
+              "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitSchemaManagement",
+              "type": "boolean",
+              "typeDescription": "boolean",
+              "withinMap": true
+            }
+          ],
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection$SectionPath",
+            "property": "quarkus.hibernate-orm.schema-management"
+          },
+          "sourceElementName": "schemaManagement",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit",
+          "type": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitSchemaManagement"
+        },
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection",
+          "items": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+              "enum": true,
+              "additionalPaths": [
+                {
+                  "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                  "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__DATABASE_GENERATION",
+                  "property": "quarkus.hibernate-orm.\"persistence-unit-name\".database.generation"
+                }
+              ],
+              "deprecation": {
+                "since": "3.22"
+              },
+              "enumAcceptedValues": {
+                "qualifiedName": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateGenerationStrategy",
+                "values": {
+                  "CREATE": {
+                    "configValue": "create"
+                  },
+                  "DROP": {
+                    "configValue": "drop"
+                  },
+                  "DROP_AND_CREATE": {
+                    "configValue": "drop-and-create"
+                  },
+                  "NONE": {
+                    "configValue": "none"
+                  },
+                  "UPDATE": {
+                    "configValue": "update"
+                  },
+                  "VALIDATE": {
+                    "configValue": "validate"
+                  }
+                }
+              },
+              "escapeDefaultValue": true,
+              "optional": true,
+              "path": {
+                "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                "environmentVariable": "QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION",
+                "property": "quarkus.hibernate-orm.database.generation"
+              },
+              "phase": "RUN_TIME",
+              "sourceElementName": "generation",
+              "sourceElementType": "METHOD",
+              "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitDatabaseGeneration",
+              "type": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateGenerationStrategy",
+              "typeDescription": "HibernateGenerationStrategy",
+              "withinMap": true
+            }
+          ],
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection$SectionPath",
+            "property": "quarkus.hibernate-orm.database"
+          },
+          "sourceElementName": "database",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit",
+          "type": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitDatabase"
+        },
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "additionalPaths": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+              "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__UNSUPPORTED_PROPERTIES__FULL_PROPERTY_KEY_",
+              "property": "quarkus.hibernate-orm.\"persistence-unit-name\".unsupported-properties.\"full-property-key\""
+            }
+          ],
+          "escapeDefaultValue": true,
+          "map": true,
+          "mapKey": "full-property-key",
+          "optional": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_HIBERNATE_ORM_UNSUPPORTED_PROPERTIES__FULL_PROPERTY_KEY_",
+            "property": "quarkus.hibernate-orm.unsupported-properties.\"full-property-key\""
+          },
+          "phase": "RUN_TIME",
+          "sourceElementName": "unsupportedProperties",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit",
+          "type": "java.util.Map",
+          "typeDescription": "Map<String,String>",
+          "withinMap": true
+        },
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "defaultValue": "true",
+          "escapeDefaultValue": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_HIBERNATE_ORM_REQUEST_SCOPED_ENABLED",
+            "property": "quarkus.hibernate-orm.request-scoped.enabled"
+          },
+          "phase": "RUN_TIME",
+          "sourceElementName": "requestScopedSessionEnabled",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfig",
+          "type": "boolean",
+          "typeDescription": "boolean"
+        }
+      ],
+      "prefix": "quarkus.hibernate-orm",
+      "qualifiedNames": [
+        "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfig"
+      ],
+      "topLevelPrefix": "quarkus.hibernate-orm"
+    }
+  ]
+}

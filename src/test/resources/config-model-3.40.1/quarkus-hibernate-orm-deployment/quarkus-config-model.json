@@ -1,0 +1,71 @@
+{
+  "configRoots": [
+    {
+      "extension": {
+        "artifactId": "quarkus-hibernate-orm",
+        "detected": true,
+        "groupId": "io.quarkus",
+        "name": "Hibernate ORM",
+        "nameSource": "POM_XML"
+      },
+      "items": [
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "additionalPaths": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+              "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__BATCH_FETCH_SIZE",
+              "property": "quarkus.hibernate-orm.\"persistence-unit-name\".batch-fetch-size"
+            }
+          ],
+          "defaultValue": "16",
+          "deprecation": {},
+          "escapeDefaultValue": true,
+          "optional": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_HIBERNATE_ORM_BATCH_FETCH_SIZE",
+            "property": "quarkus.hibernate-orm.batch-fetch-size"
+          },
+          "phase": "BUILD_TIME",
+          "sourceElementName": "batchFetchSize",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.deployment.HibernateOrmConfigPersistenceUnit",
+          "type": "java.util.OptionalInt",
+          "typeDescription": "int",
+          "withinMap": true
+        },
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "additionalPaths": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+              "environmentVariable": "QUARKUS_HIBERNATE_ORM__PERSISTENCE_UNIT_NAME__MAX_FETCH_DEPTH",
+              "property": "quarkus.hibernate-orm.\"persistence-unit-name\".max-fetch-depth"
+            }
+          ],
+          "deprecation": {},
+          "escapeDefaultValue": true,
+          "optional": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_HIBERNATE_ORM_MAX_FETCH_DEPTH",
+            "property": "quarkus.hibernate-orm.max-fetch-depth"
+          },
+          "phase": "BUILD_TIME",
+          "sourceElementName": "maxFetchDepth",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.hibernate.orm.deployment.HibernateOrmConfigPersistenceUnit",
+          "type": "java.util.OptionalInt",
+          "typeDescription": "int",
+          "withinMap": true
+        }
+      ],
+      "prefix": "quarkus.hibernate-orm",
+      "qualifiedNames": [
+        "io.quarkus.hibernate.orm.deployment.HibernateOrmConfig"
+      ],
+      "topLevelPrefix": "quarkus.hibernate-orm"
+    }
+  ]
+}

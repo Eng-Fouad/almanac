@@ -1,0 +1,10 @@
+{
+  "name": "quarkus-almanac-site",
+  "private": true,
+  "description": "Static site for the Quarkus Almanac. No build step and no dependencies; this file only marks the .js files as ES modules for Node's test runner.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests",
+    "sample": "node dev/make-sample.mjs"
+  }
+}

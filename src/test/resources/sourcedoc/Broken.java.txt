@@ -1,0 +1,10 @@
+package com.acme;
+
+import io.quarkus.runtime.annotations.ConfigDocDefault;
+
+/** Does not parse: a parameter list is never closed. */
+public interface Broken {
+
+    @ConfigDocDefault("broken")
+    String value(;
+}

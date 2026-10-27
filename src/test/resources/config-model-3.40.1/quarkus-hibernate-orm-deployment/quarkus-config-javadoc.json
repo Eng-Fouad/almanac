@@ -1,0 +1,21 @@
+{
+  "elements": {
+    "io.quarkus.hibernate.orm.deployment.HibernateOrmConfigPersistenceUnit.batchFetchSize": {
+      "deprecated": "Use {@code quarkus.hibernate-orm.fetch.batch-size} to configure the batch fetch size.",
+      "description": "The size of the batches used when loading entities and collections.\n\n`-1` means batch loading is disabled.",
+      "format": "ASCIIDOC"
+    },
+    "io.quarkus.hibernate.orm.deployment.HibernateOrmConfigPersistenceUnit.maxFetchDepth": {
+      "deprecated": "Use {@code quarkus.hibernate-orm.fetch.max-depth} to configure the maximum fetch depth.",
+      "description": "The maximum depth of outer join fetch tree for single-ended associations (one-to-one, many-to-one).\n\nA `0` disables default outer join fetching.",
+      "format": "ASCIIDOC"
+    }
+  },
+  "extension": {
+    "artifactId": "quarkus-hibernate-orm",
+    "detected": true,
+    "groupId": "io.quarkus",
+    "name": "Hibernate ORM",
+    "nameSource": "POM_XML"
+  }
+}

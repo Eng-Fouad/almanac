@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>All configuration options - Quarkus</title>
+<meta property="og:url" content="https://quarkus.io/version/3.20/guides/all-config/" />
+<meta property="og:title" content="All configuration options - 3.20" />
+</head>
+<body class="guides-configuration-reference">
+<!-- Hand-written fixture modelled on the 3.14+ config doc generator (quarkus.io 3.15 – 3.40 pages). -->
+<div class="guidepulldown version">
+<select id="guide-version-dropdown">
+<option value="main" >Main - SNAPSHOT</option>
+<option value="latest" >3.40 (latest)</option>
+<option value="3.20" selected>3.20</option>
+<option value="3.15" >3.15</option>
+</select>
+</div>
+<div class="paragraph configuration-legend">
+<p><span class="icon"><i class="fa fa-lock" title="Fixed at build time"></i></span> Configuration property fixed at build time - All other configuration properties are overridable at runtime</p>
+</div>
+<table class="tableblock frame-all grid-all stretch configuration-reference searchable configuration-reference-all-rows">
+<colgroup>
+<col style="width: 80%;">
+<col style="width: 10%;">
+<col style="width: 10%;">
+</colgroup>
+<tbody>
+<tr>
+<th class="tableblock halign-left valign-top"><p class="tableblock"><span class="extension-name">Agroal - Database connection pool</span></p></th>
+<th class="tableblock halign-left valign-middle"><p class="tableblock">Type</p></th>
+<th class="tableblock halign-left valign-middle"><p class="tableblock">Default</p></th>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc odd">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><span class="icon"><i class="fa fa-lock" title="Fixed at build time"></i></span> <a id="quarkus-agroal_quarkus-datasource-jdbc"></a> <span class="property-path"><a href="#quarkus-agroal_quarkus-datasource-jdbc"><code>quarkus.datasource.jdbc</code></a></span>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource.jdbc' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div class="paragraph">
+<p><code>quarkus.datasource."datasource-name".jdbc</code>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource."datasource-name".jdbc' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div id="conf-collapsible-desc-1" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>If we create a JDBC datasource for this datasource.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-1">QUARKUS_DATASOURCE_JDBC</code><button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-target="#env-var-1" title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+</div>
+</div>
+<div class="paragraph description-decoration">
+<p><i class="fa fa-chevron-down"></i><span>Show more</span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code>true</code></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-agroal_quarkus-datasource-jdbc-transactions"></a> <span class="property-path"><a href="#quarkus-agroal_quarkus-datasource-jdbc-transactions"><code>quarkus.datasource.jdbc.transactions</code></a></span>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource.jdbc.transactions' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div class="paragraph">
+<p><code>quarkus.datasource."datasource-name".jdbc.transactions</code>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource."datasource-name".jdbc.transactions' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div id="conf-collapsible-desc-2" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>Whether we want to use regular JDBC transactions, XA, or disable all transactional capabilities.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon"><i class="fa icon-note" title="Note"></i></td>
+<td class="content">An admonition table nested in the description: <code>xa</code> needs an XADataSource.</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-2">QUARKUS_DATASOURCE_JDBC_TRANSACTIONS</code><button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-target="#env-var-2" title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+</div>
+</div>
+<div class="paragraph description-decoration">
+<p><i class="fa fa-chevron-down"></i><span>Show more</span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><div class="content"><div class="paragraph">
+<p><span class="asciidoc-tooltip-wrapper"><code>enabled</code><span class="asciidoc-tooltip">Integrate the JDBC Datasource with the JTA TransactionManager of Quarkus.</span></span>, <span class="asciidoc-tooltip-wrapper"><code>xa</code><span class="asciidoc-tooltip">Similarly to <code>enabled</code>, but enabling XA transactions as well.</span></span>, <span class="asciidoc-tooltip-wrapper"><code>disabled</code><span class="asciidoc-tooltip">Disables the Agroal integration.</span></span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><span class="asciidoc-tooltip-wrapper"><code>enabled</code><span class="asciidoc-tooltip">Integrate the JDBC Datasource with the JTA TransactionManager of Quarkus.</span></span></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc odd">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-agroal_quarkus-datasource-jdbc-url"></a> <span class="property-path"><a href="#quarkus-agroal_quarkus-datasource-jdbc-url"><code>quarkus.datasource.jdbc.url</code></a></span>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource.jdbc.url' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div id="conf-collapsible-desc-3" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>The datasource URL.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-3">QUARKUS_DATASOURCE_JDBC_URL</code><button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-target="#env-var-3" title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+</div>
+</div>
+<div class="paragraph description-decoration">
+<p><i class="fa fa-chevron-down"></i><span>Show more</span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">required <span class="icon"><i class="fa fa-exclamation-circle" title="Configuration property is required"></i></span></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-agroal_quarkus-datasource-jdbc-additional-jdbc-properties-property-key"></a> <span class="property-path"><a href="#quarkus-agroal_quarkus-datasource-jdbc-additional-jdbc-properties-property-key"><code>quarkus.datasource.jdbc.additional-jdbc-properties."property-key"</code></a></span>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.datasource.jdbc.additional-jdbc-properties."property-key"' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div id="conf-collapsible-desc-4" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>Other unspecified properties to be passed to the JDBC driver when creating new connections.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-4">QUARKUS_DATASOURCE_JDBC_ADDITIONAL_JDBC_PROPERTIES__PROPERTY_KEY_</code><button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-target="#env-var-4" title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+</div>
+</div>
+<div class="paragraph description-decoration">
+<p><i class="fa fa-chevron-down"></i><span>Show more</span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">Map&lt;String,String&gt;</p></td>
+<td class="tableblock halign-left valign-middle"></td>
+</tr>
+<tr>
+<th class="tableblock halign-left valign-top"><p class="tableblock"><span class="extension-name">Core</span></p></th>
+<th class="tableblock halign-left valign-middle"><p class="tableblock">Type</p></th>
+<th class="tableblock halign-left valign-middle"><p class="tableblock">Default</p></th>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc row-hidden odd">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><span class="icon"><i class="fa fa-lock" title="Fixed at build time"></i></span> <a id="quarkus-core_quarkus-debug-dump-build-metrics"></a> <span class="property-path"><a href="#quarkus-core_quarkus-debug-dump-build-metrics"><span class="line-through"><code>quarkus.debug.dump-build-metrics</code></span></a></span>
+<button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-text='quarkus.debug.dump-build-metrics' title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+<div id="conf-collapsible-desc-5" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p><em>This property is deprecated since <code>3.31</code>: Use <code>quarkus.builder.metrics</code> instead.</em></p>
+</div>
+<div class="paragraph">
+<p>If set to true then dump the build metrics to a JSON file in the build directory.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-5">QUARKUS_DEBUG_DUMP_BUILD_METRICS</code><button class="btn-copy fa fa-clipboard inline-btn-copy" data-clipboard-action="copy" data-clipboard-target="#env-var-5" title="Copy to clipboard" do-not-collapse="true"></button></p>
+</div>
+</div>
+</div>
+<div class="paragraph description-decoration">
+<p><i class="fa fa-chevron-down"></i><span>Show more</span></p>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code>false</code></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc row-hidden">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-core_quarkus-default-locale"></a> <span class="property-path"><a href="#quarkus-core_quarkus-default-locale"><span class="line-through"><code>quarkus.default-locale</code></span></a></span></p>
+</div>
+<div id="conf-collapsible-desc-6" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p><em>This property is deprecated: Use <code>quarkus.locales</code> instead.</em></p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-6">QUARKUS_DEFAULT_LOCALE</code></p>
+</div>
+</div>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">Locale</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code>`en-US` in native mode</code></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc row-hidden odd">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-vertx-http_quarkus-http-read-timeout"></a> <span class="property-path"><a href="#quarkus-vertx-http_quarkus-http-read-timeout"><code>quarkus.http.read-timeout</code></a></span></p>
+</div>
+<div id="conf-collapsible-desc-7" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>Http connection read timeout for blocking IO.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-7">QUARKUS_HTTP_READ_TIMEOUT</code></p>
+</div>
+</div>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><a href="https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html">Duration</a> <a href="#duration-note-anchor-all-config"><span class="icon"><i class="fa fa-question-circle" title="More information about the Duration format"></i></span></a></p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code>60S</code></p></td>
+</tr>
+<tr class="row-hidden">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><span class="icon"><i class="fa fa-lock" title="Fixed at build time"></i></span> <a id="quarkus-container-image-docker_quarkus-docker-dockerfile-jvm-path"></a> <span class="property-path"><a href="#quarkus-container-image-docker_quarkus-docker-dockerfile-jvm-path"><code>quarkus.docker.dockerfile-jvm-path</code></a></span></p>
+</div>
+<div id="conf-non-collapsible-desc-8" class="openblock description">
+<div class="content">
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-8">QUARKUS_DOCKER_DOCKERFILE_JVM_PATH</code></p>
+</div>
+</div>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code>src/main/docker/Dockerfile.jvm</code></p></td>
+</tr>
+<tr class="row-collapsible row-collapsed row-with-desc row-hidden odd">
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="quarkus-smallrye-fault-tolerance_quarkus-fault-tolerance-identifier-retry-max-retries"></a> <span class="property-path"><a href="#quarkus-smallrye-fault-tolerance_quarkus-fault-tolerance-identifier-retry-max-retries"><code>quarkus.fault-tolerance."<identifier>".retry.max-retries</code></a></span></p>
+</div>
+<div id="conf-collapsible-desc-9" class="openblock description description-collapsed">
+<div class="content">
+<div class="paragraph">
+<p>The maximum number of retries.</p>
+</div>
+<div class="paragraph">
+<p>Environment variable: <code id="env-var-9">QUARKUS_FAULT_TOLERANCE___IDENTIFIER___RETRY_MAX_RETRIES</code></p>
+</div>
+</div>
+</div></div></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock">int</p></td>
+<td class="tableblock halign-left valign-middle"><p class="tableblock"><code><default></code></p></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

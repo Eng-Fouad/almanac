@@ -1,0 +1,3 @@
+# dataset/ is written with LF line ends and checked byte for byte by `dataset verify`:
+# keep it LF in every checkout, whatever core.autocrlf says.
+dataset/** text eol=lf

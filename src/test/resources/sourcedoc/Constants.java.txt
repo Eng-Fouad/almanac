@@ -1,0 +1,11 @@
+package com.acme;
+
+/** Constants in a file of their own. */
+public final class Constants {
+
+    public static final String REMOTE = "remote-value";
+    public static final String STATIC_IMPORTED = "static-key";
+
+    private Constants() {
+    }
+}

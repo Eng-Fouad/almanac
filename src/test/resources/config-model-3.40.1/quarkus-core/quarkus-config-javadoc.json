@@ -1,0 +1,24 @@
+{
+  "elements": {
+    "io.quarkus.runtime.ConfigConfig.profile": {
+      "description": "A comma separated list of profiles that will be active when Quarkus launches.",
+      "format": "JAVADOC"
+    },
+    "io.quarkus.runtime.logging.LogRuntimeConfig.CategoryConfig.handlers": {
+      "description": "The names of the handlers to link to this category.",
+      "format": "JAVADOC"
+    },
+    "io.quarkus.runtime.logging.LogRuntimeConfig.CategoryConfig.level": {
+      "description": "The log level for this category.\n<p>\nNote that to get log levels below <code>INFO</code>,\nthe minimum level build-time configuration option also needs to be adjusted.",
+      "format": "JAVADOC"
+    }
+  },
+  "extension": {
+    "artifactId": "quarkus-core",
+    "detected": true,
+    "groupId": "io.quarkus",
+    "name": "Core",
+    "nameSource": "EXTENSION_METADATA",
+    "splitOnConfigRootDescription": true
+  }
+}

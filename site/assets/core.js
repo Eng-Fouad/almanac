@@ -1,0 +1,1330 @@
+/*
+ * Quarkus Almanac: core.js
+ *
+ * Pure logic, no DOM: version ordering, history lookup, diffs, search, timelines and pre-release visibility.
+ * Mirrors the extractor's QuarkusVersion and ConfigKeys; defines how the site reads its data, the diff semantics
+ * and which releases it lists.
+ * Everything here is unit tested by site/tests/core.test.mjs (`node --test site/tests`).
+ */
+
+/* ========================================================================== */
+/* Quarkus versions (same semantics as the extractor's QuarkusVersion)         */
+/* ========================================================================== */
+
+const QUALIFIERS = {
+  alpha: { rank: 0, name: 'Alpha' },
+  beta: { rank: 1, name: 'Beta' },
+  cr: { rank: 2, name: 'CR' },
+  final: { rank: 3, name: 'Final' },
+};
+const FINAL_RANK = 3;
+/** Qualifiers outside Alpha/Beta/CR/Final never occur in Quarkus releases; they sort before Alpha. */
+const UNKNOWN_RANK = -1;
+const versionCache = new Map();
+
+/**
+ * Parses `N(.N)*` with an optional `.Final`, `.CR<n>`, `.Beta<n>` or `.Alpha<n>` qualifier
+ * (`-` tolerated as separator, case ignored).
+ * @returns {{raw:string, nums:number[], qualifier:string, rank:number, qnum:number, final:boolean, stream:string}}
+ */
+export function parseVersion(input) {
+  const raw = String(input ?? '').trim();
+  const cached = versionCache.get(raw);
+  if (cached) return cached;
+  let nums = [];
+  let qualifier = '';
+  let rank = FINAL_RANK;
+  let qnum = 0;
+  const m = /^(\d+(?:\.\d+)*)(?:[.-]([A-Za-z]+)[.-]?(\d*))?$/.exec(raw);
+  if (m) {
+    nums = m[1].split('.').map(Number);
+    if (m[2]) {
+      const q = QUALIFIERS[m[2].toLowerCase()];
+      if (q) {
+        rank = q.rank;
+        qualifier = q.name;
+        qnum = m[3] ? Number(m[3]) : 0;
+      } else {
+        rank = UNKNOWN_RANK;
+        qualifier = m[2] + m[3];
+      }
+    }
+  } else {
+    const lead = /^(\d+(?:\.\d+)*)(?:[.-](.*))?$/.exec(raw);
+    if (lead) {
+      nums = lead[1].split('.').map(Number);
+      qualifier = lead[2] ?? '';
+      rank = qualifier ? UNKNOWN_RANK : FINAL_RANK;
+    } else {
+      qualifier = raw;
+      rank = UNKNOWN_RANK;
+    }
+  }
+  const parsed = Object.freeze({
+    raw,
+    nums,
+    qualifier,
+    rank,
+    qnum,
+    final: rank === FINAL_RANK,
+    stream: `${nums[0] ?? 0}.${nums[1] ?? 0}`,
+  });
+  if (versionCache.size > 20000) versionCache.clear();
+  versionCache.set(raw, parsed);
+  return parsed;
+}
+
+/**
+ * Orders Quarkus versions: numeric parts element-wise (missing = 0), then qualifier rank
+ * Alpha < Beta < CR < (Final | none), then the qualifier number.
+ * @returns {-1|0|1}
+ */
+export function compareVersions(a, b) {
+  const x = typeof a === 'object' && a !== null ? a : parseVersion(a);
+  const y = typeof b === 'object' && b !== null ? b : parseVersion(b);
+  const n = Math.max(x.nums.length, y.nums.length);
+  for (let i = 0; i < n; i++) {
+    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  if (x.rank !== y.rank) return x.rank < y.rank ? -1 : 1;
+  if (x.qnum !== y.qnum) return x.qnum < y.qnum ? -1 : 1;
+  if (x.rank === UNKNOWN_RANK && x.qualifier !== y.qualifier) return x.qualifier < y.qualifier ? -1 : 1;
+  return 0;
+}
+
+/** Returns a new array of version strings in ascending version order. */
+export function sortVersions(list) {
+  return [...list].sort(compareVersions);
+}
+
+/** A version is final when it has no qualifier or `Final`. */
+export function isFinal(v) {
+  return parseVersion(v).final;
+}
+
+/** `major.minor`, e.g. `3.20` for `3.20.6` and `4.0` for `4.0.0.Beta1`. */
+export function stream(v) {
+  return parseVersion(v).stream;
+}
+
+/** Display form: drops a trailing `.Final` (`3.2.12.Final` → `3.2.12`). */
+export function shortVersion(v) {
+  return String(v ?? '').replace(/[.-]Final$/i, '');
+}
+
+/**
+ * Finds a version in `list` (strings or `{v}` objects): exact string match first, then version equality,
+ * so `3.0.0` finds `3.0.0.Final`. Returns -1 when absent.
+ */
+export function findVersionIndex(list, v) {
+  if (v == null || v === '') return -1;
+  const want = String(v).trim();
+  const at = (i) => (typeof list[i] === 'string' ? list[i] : list[i].v);
+  for (let i = 0; i < list.length; i++) if (at(i) === want) return i;
+  if (!/^\d/.test(want)) return -1;
+  for (let i = 0; i < list.length; i++) if (compareVersions(at(i), want) === 0) return i;
+  return -1;
+}
+
+/* ========================================================================== */
+/* Library versions (BOM entries) and change kinds                             */
+/* ========================================================================== */
+
+/** Maven-style qualifier ranks for library versions: alpha < beta < milestone < rc/cr < snapshot < release < sp < other. */
+const LIB_QUALIFIER_RANKS = [
+  [/^(alpha|a)$/, 0],
+  [/^(beta|b)$/, 1],
+  [/^(milestone|m)$/, 2],
+  [/^(rc|cr)$/, 3],
+  [/^snapshot$/, 4],
+  [/^(|final|ga|release)$/, 5],
+  [/^sp$/, 6],
+];
+const LIB_UNKNOWN_RANK = 7;
+
+/**
+ * Splits a library version into its leading numeric parts and a qualifier
+ * (`4.1.115.Final` → nums [4,1,115], qualifier `Final`).
+ */
+export function parseLibVersion(input) {
+  const raw = String(input ?? '').trim();
+  const m = /^(\d+(?:\.\d+)*)(.*)$/.exec(raw);
+  if (!m) return { raw, nums: [], qualifier: raw, qrank: LIB_UNKNOWN_RANK, qnum: 0, qrest: raw.toLowerCase() };
+  const nums = m[1].split('.').map(Number);
+  const qualifier = m[2].replace(/^[.\-_]+/, '');
+  const q = /^([A-Za-z]*)[.\-_]?(\d*)(.*)$/.exec(qualifier);
+  const word = q[1].toLowerCase();
+  let qrank = LIB_UNKNOWN_RANK;
+  for (const [re, rank] of LIB_QUALIFIER_RANKS) {
+    if (re.test(word)) {
+      qrank = rank;
+      break;
+    }
+  }
+  const known = qrank !== LIB_UNKNOWN_RANK;
+  return {
+    raw,
+    nums,
+    qualifier,
+    qrank,
+    qnum: known && q[2] ? Number(q[2]) : 0,
+    qrest: (known ? q[3] : qualifier).toLowerCase(),
+  };
+}
+
+/** Orders library versions: numeric parts, then qualifier rank and number, then the remaining text. */
+export function compareLibVersions(a, b) {
+  const x = parseLibVersion(a);
+  const y = parseLibVersion(b);
+  const n = Math.max(x.nums.length, y.nums.length);
+  for (let i = 0; i < n; i++) {
+    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  if (x.qrank !== y.qrank) return x.qrank < y.qrank ? -1 : 1;
+  if (x.qnum !== y.qnum) return x.qnum < y.qnum ? -1 : 1;
+  if (x.qrest !== y.qrest) return x.qrest < y.qrest ? -1 : 1;
+  return 0;
+}
+
+/**
+ * `downgrade` if B < A, else `major` / `minor` / `patch` by the first differing leading numeric
+ * part (any position after the second counts as patch), `other` when only qualifiers differ, `same` when equal.
+ */
+export function bomChangeKind(from, to) {
+  if (from === to) return 'same';
+  if (compareLibVersions(from, to) > 0) return 'downgrade';
+  const a = parseLibVersion(from).nums;
+  const b = parseLibVersion(to).nums;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return i === 0 ? 'major' : i === 1 ? 'minor' : 'patch';
+  }
+  return 'other';
+}
+
+/** Splits `groupId:artifactId[:type][:classifier]`. */
+export function splitId(id) {
+  const parts = String(id).split(':');
+  return { group: parts[0] ?? '', artifact: parts[1] ?? '', extra: parts.slice(2).join(':') };
+}
+
+/* ========================================================================== */
+/* Config keys (mirrors the extractor's ConfigKeys)                            */
+/* ========================================================================== */
+
+/** Replaces every double-quoted segment with `*` and every `[digits]` with `[*]`. Nothing else. */
+export function canonicalKey(name) {
+  return String(name ?? '').replace(/"[^"]*"/g, '*').replace(/\[\d+\]/g, '[*]');
+}
+
+/** Upper-case, every character not `[A-Za-z0-9]` becomes `_`. */
+export function envVar(name) {
+  return String(name ?? '').toUpperCase().replace(/[^A-Za-z0-9]/g, '_');
+}
+
+/**
+ * Last dot-separated segment of a canonical key. A trailing `*` (map key) segment is kept together
+ * with its parent so that `a.b.env.*` yields `env.*` rather than a bare `*`.
+ */
+export function lastSegment(key) {
+  const parts = String(key ?? '').split('.');
+  let last = parts.pop() ?? '';
+  if (last === '*' && parts.length) last = `${parts.pop()}.*`;
+  return last;
+}
+
+/* ========================================================================== */
+/* Change-point histories                                                      */
+/* ========================================================================== */
+
+/**
+ * Value of the last change point with index ≤ vi. `undefined` before the first point,
+ * `null` where the history says "not present".
+ */
+export function stateAt(h, vi) {
+  if (!Array.isArray(h) || h.length === 0) return undefined;
+  let lo = 0;
+  let hi = h.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (h[mid][0] <= vi) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found < 0 ? undefined : h[found][1];
+}
+
+/** The newest non-null value in a history (the latest known state), or null. */
+export function latestValue(h) {
+  if (!Array.isArray(h)) return null;
+  for (let i = h.length - 1; i >= 0; i--) if (h[i][1] != null) return h[i][1];
+  return null;
+}
+
+/** Indices of the releases that have config snapshots, derived from `versions[].config`. */
+export function configVersionsOf(versions) {
+  const out = [];
+  versions.forEach((x, i) => {
+    if (x && x.config) out.push(i);
+  });
+  return out;
+}
+
+function streamOf(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return stream(entry);
+  return entry.stream || stream(entry.v);
+}
+
+/* ========================================================================== */
+/* Pre-releases and visibility                                                 */
+/* ========================================================================== */
+
+/** True for a pre-release: the `pre` flag of a versions.json entry, else "not final" by its version. */
+export function isPreRelease(entry) {
+  if (entry == null) return false;
+  if (typeof entry === 'string') return !isFinal(entry);
+  if (typeof entry.pre === 'boolean') return entry.pre;
+  return !isFinal(entry.v);
+}
+
+/** Qualifier of a pre-release for display: `Alpha`, `Beta`, `CR` (unknown ones as written); null for a final. */
+export function preQualifier(entry) {
+  if (!isPreRelease(entry)) return null;
+  const q = parseVersion(typeof entry === 'string' ? entry : entry.v).qualifier;
+  return q || null;
+}
+
+/**
+ * Which releases the site lists. Finals always; a pre-release when `showPre` is on, or when it is
+ * *upcoming* (its stream has no final release yet).
+ * @param {Array<{v:string, stream?:string, pre?:boolean}>} versions ascending, as in versions.json
+ * @returns {{showPre:boolean, pre:boolean[], upcoming:boolean[], visible:boolean[], indices:number[],
+ *   hideable:number, hidden:number, upcomingStreams:Set<string>}} `indices` = the visible indices, ascending;
+ *   `hideable` = pre-releases the toggle controls (not upcoming); `hidden` = how many of them are hidden now
+ */
+export function releaseVisibility(versions, { showPre = false } = {}) {
+  const list = Array.isArray(versions) ? versions : [];
+  const pre = list.map(isPreRelease);
+  const withFinal = new Set();
+  list.forEach((x, i) => {
+    if (!pre[i]) withFinal.add(streamOf(x));
+  });
+  const upcoming = list.map((x, i) => pre[i] && !withFinal.has(streamOf(x)));
+  const visible = list.map((x, i) => !pre[i] || upcoming[i] || !!showPre);
+  const indices = [];
+  let hideable = 0;
+  let hidden = 0;
+  const upcomingStreams = new Set();
+  list.forEach((x, i) => {
+    if (visible[i]) indices.push(i);
+    else hidden++;
+    if (pre[i] && !upcoming[i]) hideable++;
+    if (upcoming[i]) upcomingStreams.add(streamOf(x));
+  });
+  return { showPre: !!showPre, pre, upcoming, visible, indices, hideable, hidden, upcomingStreams };
+}
+
+/** The entries of `indices` (release or config version indices) that `vis` shows, in order; all of them without `vis`. */
+export function visibleOnly(indices, vis) {
+  const list = Array.isArray(indices) ? indices : [];
+  return vis ? list.filter((i) => vis.visible[i]) : [...list];
+}
+
+/**
+ * The config snapshot used for release `vi`, or null ("no config data").
+ * - A pre-release uses only its own snapshot: `vi` itself when it is a config version, else null. It never
+ *   borrows another release's snapshot, not even one of its stream.
+ * - A final uses the stream rule: a final snapshot of its stream (the greatest one ≤ vi, else the nearest one
+ *   after it); else a pre-release snapshot of its stream (same order); otherwise the latest config version ≤ vi.
+ * @param {number} vi index into versions
+ * @param {Array<{v:string, stream?:string, pre?:boolean, config?:boolean}>} versions
+ * @param {number[]} [configVis] config version indices (defaults to the `config` flags)
+ */
+export function configVersionFor(vi, versions, configVis) {
+  if (!Array.isArray(versions) || vi == null || vi < 0 || vi >= versions.length) return null;
+  const cvs = configVis ?? configVersionsOf(versions);
+  if (isPreRelease(versions[vi])) return cvs.includes(vi) ? vi : null;
+  const s = streamOf(versions[vi]);
+  const best = { final: [-1, -1], pre: [-1, -1] }; // [greatest ≤ vi, nearest after vi]
+  let below = -1;
+  for (const c of cvs) {
+    if (c < 0 || c >= versions.length) continue;
+    if (streamOf(versions[c]) === s) {
+      const b = isPreRelease(versions[c]) ? best.pre : best.final;
+      if (c <= vi) b[0] = Math.max(b[0], c);
+      else if (b[1] < 0 || c < b[1]) b[1] = c;
+    }
+    if (c <= vi) below = Math.max(below, c);
+  }
+  for (const c of [...best.final, ...best.pre]) if (c >= 0) return c;
+  return below >= 0 ? below : null;
+}
+
+/* ========================================================================== */
+/* Config diff                                                                 */
+/* ========================================================================== */
+
+const PHASES = {
+  B: { name: 'BUILD_TIME', label: 'build time', buildTime: true, long: 'BUILD_TIME: fixed at build time, not visible at runtime' },
+  F: { name: 'BUILD_AND_RUN_TIME_FIXED', label: 'build time, fixed', buildTime: true, long: 'BUILD_AND_RUN_TIME_FIXED: fixed at build time, readable but not overridable at runtime' },
+  R: { name: 'RUN_TIME', label: 'runtime', buildTime: false, long: 'RUN_TIME: can be set or overridden at runtime' },
+  S: { name: 'BOOTSTRAP', label: 'bootstrap', buildTime: false, long: 'BOOTSTRAP: runtime, read before the application starts' },
+};
+
+/** Phase metadata for a phase code (B, F, R, S); null when unknown. */
+export function phaseInfo(code) {
+  const p = PHASES[code];
+  return p ? { code, ...p } : null;
+}
+
+/**
+ * Java-ish type label from a config state: `int`, `List<string>`, `Map<String, string>`. The processor's type of a
+ * map property is usually the whole map type already (`Map<String,String>`), which is shown as it is.
+ */
+export function typeLabel(s) {
+  if (!s) return '';
+  const t = s.t || 'unknown';
+  if (s.m && t.startsWith('Map<')) return t;
+  if (s.m && s.l) return `Map<String, List<${t}>>`;
+  if (s.m) return `Map<String, ${t}>`;
+  if (s.l) return `List<${t}>`;
+  return t;
+}
+
+function isDeprecated(s) {
+  return s != null && s.x !== undefined && s.x !== null && s.x !== false;
+}
+
+function sameSet(a, b) {
+  const x = new Set(a);
+  const y = new Set(b);
+  if (x.size !== y.size) return false;
+  for (const v of x) if (!y.has(v)) return false;
+  return true;
+}
+
+/**
+ * Change kinds between two states of the same property. Name, alias, optional and description
+ * differences are ignored.
+ * @returns {string[]} subset of default, type, phase, deprecated, undeprecated, enum, extension
+ */
+export function configChangeKinds(a, b) {
+  const kinds = [];
+  if ((a.d ?? null) !== (b.d ?? null)) kinds.push('default');
+  if ((a.t ?? null) !== (b.t ?? null) || !!a.l !== !!b.l || !!a.m !== !!b.m) kinds.push('type');
+  if ((a.p ?? null) !== (b.p ?? null)) kinds.push('phase');
+  const da = isDeprecated(a);
+  const db = isDeprecated(b);
+  if (!da && db) kinds.push('deprecated');
+  else if (da && !db) kinds.push('undeprecated');
+  if (Array.isArray(a.en) && Array.isArray(b.en) && !sameSet(a.en, b.en)) kinds.push('enum');
+  if ((a.e ?? null) !== (b.e ?? null)) kinds.push('extension');
+  return kinds;
+}
+
+/** Values added to / removed from an enum between two states. */
+export function enumDelta(a, b) {
+  const x = new Set(a?.en ?? []);
+  const y = new Set(b?.en ?? []);
+  return { added: [...y].filter((v) => !x.has(v)), removed: [...x].filter((v) => !y.has(v)) };
+}
+
+function statesAt(config, vi) {
+  const out = new Map();
+  for (const p of config.props) {
+    const si = stateAt(p.h, vi);
+    if (si != null) out.set(p.k, config.states[si]);
+  }
+  return out;
+}
+
+/** canonical alias key → owning key, for the properties present in one snapshot. */
+function aliasIndex(present) {
+  const out = new Map();
+  for (const [k, s] of present) {
+    for (const alias of s.a ?? []) {
+      const ak = canonicalKey(alias);
+      if (ak !== k && !out.has(ak)) out.set(ak, k);
+    }
+  }
+  return out;
+}
+
+const byKey = (x, y) => (x.k < y.k ? -1 : x.k > y.k ? 1 : 0);
+
+/**
+ * Config diff between config versions `a` and `b`.
+ * - added: key in B, absent from A's keys and A's canonical alias keys;
+ * - removed: key in A, absent from B's keys and B's canonical alias keys;
+ * - changed: same key in both with at least one change kind. Additionally, a pair of keys that only
+ *   match through each other's aliases (A's key is an alias in B and B's key is an alias in A) is compared
+ *   and reported with `via` = A's key, since it is the same property under a re-keyed name;
+ * - removed entries carry `replacement` when exactly one added key has the same `e`, `t` and last segment
+ *   (a heuristic, label it as such).
+ */
+export function diffConfig(config, a, b) {
+  const A = statesAt(config, a);
+  const B = statesAt(config, b);
+  const aliasA = aliasIndex(A);
+  const aliasB = aliasIndex(B);
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const [k, sb] of B) {
+    const sa = A.get(k);
+    if (sa) {
+      const kinds = configChangeKinds(sa, sb);
+      if (kinds.length) changed.push({ k, a: sa, b: sb, kinds });
+    } else if (!aliasA.has(k)) {
+      added.push({ k, b: sb });
+    }
+  }
+  for (const [k, sa] of A) {
+    if (B.has(k)) continue;
+    const owner = aliasB.get(k);
+    if (owner === undefined) {
+      removed.push({ k, a: sa });
+      continue;
+    }
+    if (!A.has(owner) && aliasA.get(owner) === k) {
+      const sb = B.get(owner);
+      const kinds = configChangeKinds(sa, sb);
+      if (kinds.length) changed.push({ k: owner, a: sa, b: sb, kinds, via: k });
+    }
+  }
+  const shapes = new Map();
+  for (const x of added) {
+    const sig = `${x.b.e ?? ''}\u0000${x.b.t ?? ''}\u0000${lastSegment(x.k)}`;
+    if (!shapes.has(sig)) shapes.set(sig, []);
+    shapes.get(sig).push(x.k);
+  }
+  for (const r of removed) {
+    const candidates = shapes.get(`${r.a.e ?? ''}\u0000${r.a.t ?? ''}\u0000${lastSegment(r.k)}`);
+    if (candidates && candidates.length === 1) r.replacement = candidates[0];
+  }
+  added.sort(byKey);
+  removed.sort(byKey);
+  changed.sort(byKey);
+  const counts = { added: added.length, removed: removed.length, changed: changed.length };
+  for (const kind of ['default', 'type', 'phase', 'deprecated', 'undeprecated', 'enum', 'extension']) counts[kind] = 0;
+  for (const c of changed) for (const kind of c.kinds) counts[kind]++;
+  return { a, b, added, removed, changed, counts };
+}
+
+/** Filter tags shown as chips on the compare page; undeprecated rows are found under `deprecated`. */
+export const CONFIG_FILTER_TAGS = ['added', 'removed', 'default', 'type', 'phase', 'deprecated', 'enum', 'extension'];
+
+const CHANGE_ORDER = { removed: 0, changed: 1, added: 2 };
+
+/**
+ * Flattens a config diff into display rows sorted by extension, then removed → changed → added, then name.
+ * Each row carries `tags` for the filter chips and a lower-case `text` for the text filter.
+ */
+export function configRows(diff, desc = {}) {
+  const rows = [];
+  const push = (change, x) => {
+    const s = x.b ?? x.a;
+    const kinds = change === 'changed' ? x.kinds : [change];
+    const tags = [...new Set(kinds.map((kd) => (kd === 'undeprecated' ? 'deprecated' : kd)))];
+    const d = (desc && desc[x.k]) || null;
+    const aliases = s.a ?? [];
+    rows.push({
+      change,
+      k: x.k,
+      name: s.n ?? x.k,
+      ext: s.e ?? '',
+      a: x.a ?? null,
+      b: x.b ?? null,
+      kinds,
+      tags,
+      desc: d,
+      replacement: x.replacement ?? null,
+      via: x.via ?? null,
+      text: [s.n ?? '', x.k, ...aliases, s.e ?? '', d ?? '', x.via ?? ''].join('\n').toLowerCase(),
+    });
+  };
+  for (const x of diff.removed) push('removed', x);
+  for (const x of diff.changed) push('changed', x);
+  for (const x of diff.added) push('added', x);
+  rows.sort(
+    (x, y) =>
+      (x.ext < y.ext ? -1 : x.ext > y.ext ? 1 : 0) ||
+      CHANGE_ORDER[x.change] - CHANGE_ORDER[y.change] ||
+      (x.name < y.name ? -1 : x.name > y.name ? 1 : 0),
+  );
+  return rows;
+}
+
+/** Number of rows per filter tag. */
+export function tagCounts(rows) {
+  const out = {};
+  for (const r of rows) for (const t of r.tags) out[t] = (out[t] ?? 0) + 1;
+  return out;
+}
+
+/** Rows matching every condition: any of `tags` (empty = all) and every whitespace-separated word of `text`. */
+export function filterRows(rows, { tags, text } = {}) {
+  const wanted = tags && tags.size ? tags : null;
+  const words = String(text ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!wanted && !words.length) return rows;
+  return rows.filter((r) => {
+    if (wanted && !r.tags.some((t) => wanted.has(t))) return false;
+    for (const w of words) if (!r.text.includes(w)) return false;
+    return true;
+  });
+}
+
+/** Groups consecutive-or-not rows by a key function, preserving first-seen order. */
+export function groupBy(rows, keyFn) {
+  const out = new Map();
+  for (const r of rows) {
+    const k = keyFn(r);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(r);
+  }
+  return out;
+}
+
+/* ========================================================================== */
+/* BOM diff                                                                    */
+/* ========================================================================== */
+
+/** Resolves `"="` to the Quarkus release version string; passes other values through. */
+export function resolveBomValue(raw, releaseVersion) {
+  return raw === '=' ? releaseVersion : raw;
+}
+
+export const BOM_KIND_ORDER = ['downgrade', 'major', 'minor', 'patch', 'other', 'added', 'removed'];
+
+/**
+ * BOM diff between releases `a` and `b` (indices into versions). `"="` resolves to the release version;
+ * artifacts that are `"="` in both releases are only counted (`modules`), not listed.
+ */
+export function diffBom(bom, versions, a, b) {
+  const va = versions[a].v;
+  const vb = versions[b].v;
+  let modules = 0;
+  let unchanged = 0;
+  const rows = [];
+  for (const art of bom.artifacts) {
+    const ra = stateAt(art.h, a);
+    const rb = stateAt(art.h, b);
+    const inA = ra != null;
+    const inB = rb != null;
+    if (!inA && !inB) continue;
+    if (ra === '=' && rb === '=') {
+      modules++;
+      continue;
+    }
+    const from = inA ? resolveBomValue(ra, va) : null;
+    const to = inB ? resolveBomValue(rb, vb) : null;
+    let kind;
+    if (!inA) kind = 'added';
+    else if (!inB) kind = 'removed';
+    else if (from === to) {
+      unchanged++;
+      continue;
+    } else kind = bomChangeKind(from, to);
+    const { group, artifact, extra } = splitId(art.id);
+    rows.push({ id: art.id, group, artifact, extra, from, to, kind, follows: ra === '=' || rb === '=' });
+  }
+  rows.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  const counts = { changed: 0 };
+  for (const kind of BOM_KIND_ORDER) counts[kind] = 0;
+  for (const r of rows) {
+    counts[r.kind]++;
+    if (r.kind !== 'added' && r.kind !== 'removed') counts.changed++;
+  }
+  return { a, b, from: va, to: vb, modules, unchanged, rows, groups: groupBomRows(rows), counts };
+}
+
+/**
+ * Groups BOM rows sharing (groupId, from, to); ordered by severity
+ * (downgrade, major, minor, patch, other, added, removed), then groupId, then versions.
+ */
+export function groupBomRows(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    const key = `${r.group}\u0000${r.from ?? ''}\u0000${r.to ?? ''}`;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, group: r.group, from: r.from, to: r.to, kind: r.kind, items: [], text: '' };
+      map.set(key, g);
+    }
+    g.items.push(r);
+  }
+  const groups = [...map.values()];
+  for (const g of groups) {
+    g.text = [g.group, g.from ?? '', g.to ?? '', ...g.items.map((r) => r.id)].join('\n').toLowerCase();
+  }
+  const order = (k) => BOM_KIND_ORDER.indexOf(k);
+  groups.sort(
+    (x, y) =>
+      order(x.kind) - order(y.kind) ||
+      (x.group < y.group ? -1 : x.group > y.group ? 1 : 0) ||
+      String(x.from ?? '').localeCompare(String(y.from ?? '')) ||
+      String(x.to ?? '').localeCompare(String(y.to ?? '')),
+  );
+  return groups;
+}
+
+/* ========================================================================== */
+/* Headline libraries                                                          */
+/* ========================================================================== */
+
+/**
+ * Shown first on the compare page when present in either release; matched by artifactId (and groupId where
+ * given). Each label names one library, so a comparison never shows a label twice: `alternatives` marks one
+ * library published under several coordinates (preferred first: artifacts order, then groups order).
+ */
+export const HEADLINE_LIBRARIES = [
+  { label: 'Hibernate ORM', artifacts: ['hibernate-core'], groups: ['org.hibernate.orm', 'org.hibernate'], alternatives: true },
+  { label: 'Hibernate Reactive', artifacts: ['hibernate-reactive-core'] },
+  { label: 'Hibernate Validator', artifacts: ['hibernate-validator'] },
+  { label: 'Hibernate Search', artifacts: ['hibernate-search-mapper-orm'] },
+  { label: 'Vert.x', artifacts: ['vertx-core'] },
+  { label: 'Netty', artifacts: ['netty-common'] },
+  { label: 'RESTEasy', artifacts: ['resteasy-core'] },
+  // io.smallrye:smallrye-config is the 1.x coordinate; 3.0 to 3.23 still list it (1.5.0) next to the real one.
+  { label: 'SmallRye Config', artifacts: ['smallrye-config'], groups: ['io.smallrye.config', 'io.smallrye'], alternatives: true },
+  { label: 'Mutiny', artifacts: ['mutiny'] },
+  { label: 'SmallRye Reactive Messaging', artifacts: ['smallrye-reactive-messaging-api'] },
+  { label: 'Jackson', artifacts: ['jackson-databind'], groups: ['com.fasterxml.jackson.core'] },
+  { label: 'Jackson 3', artifacts: ['jackson-databind'], groups: ['tools.jackson.core'] },
+  { label: 'Kotlin', artifacts: ['kotlin-stdlib'] },
+  { label: 'Kafka clients', artifacts: ['kafka-clients'] },
+  { label: 'Micrometer', artifacts: ['micrometer-core'] },
+  { label: 'OpenTelemetry', artifacts: ['opentelemetry-api'] },
+  { label: 'gRPC', artifacts: ['grpc-core'] },
+  // One row: since 3.8.3 Quarkus manages both artifacts at the same version, so a second row would only repeat
+  // the first. graal-sdk stands for the SDK; nativeimage stands in for a release that does not manage graal-sdk.
+  { label: 'GraalVM SDK', artifacts: ['graal-sdk', 'nativeimage'], groups: ['org.graalvm.sdk'], alternatives: true },
+  // Two rows: from 3.4 to 3.30 both are managed, at different versions (3.x and 1.x).
+  { label: 'JBoss LogManager', artifacts: ['jboss-logmanager'] },
+  { label: 'JBoss LogManager Embedded', artifacts: ['jboss-logmanager-embedded'] },
+  { label: 'Narayana JTA', artifacts: ['narayana-jta'] },
+  { label: 'Agroal', artifacts: ['agroal-api'] },
+  { label: 'Flyway', artifacts: ['flyway-core'] },
+  { label: 'Liquibase', artifacts: ['liquibase-core'] },
+  { label: 'JUnit Jupiter', artifacts: ['junit-jupiter-api'] },
+  { label: 'Testcontainers', artifacts: ['testcontainers'] },
+  { label: 'Picocli', artifacts: ['picocli'] },
+  { label: 'MongoDB driver', artifacts: ['mongodb-driver-sync'] },
+  { label: 'Infinispan client', artifacts: ['infinispan-client-hotrod'] },
+];
+
+/**
+ * Headline library rows for a comparison, in HEADLINE_LIBRARIES order. An entry marked `alternatives` yields at
+ * most one row: in each release, the first of its artifacts that the release manages stands for the library
+ * (`fromId` / `toId` say which; `id` is the newer one).
+ * @returns {Array<{label:string, id:string, fromId:string|null, toId:string|null, from:string|null, to:string|null, kind:string}>}
+ */
+export function headlineLibraries(bom, versions, a, b) {
+  const byArtifact = new Map();
+  for (const art of bom.artifacts) {
+    const parts = art.id.split(':');
+    if (parts.length !== 2) continue;
+    if (!byArtifact.has(parts[1])) byArtifact.set(parts[1], []);
+    byArtifact.get(parts[1]).push(art);
+  }
+  const va = versions[a].v;
+  const vb = versions[b].v;
+  const out = [];
+  const row = (label, artA, artB, ra, rb) => {
+    const from = ra == null ? null : resolveBomValue(ra, va);
+    const to = rb == null ? null : resolveBomValue(rb, vb);
+    const kind = from == null ? 'added' : to == null ? 'removed' : bomChangeKind(from, to);
+    const fromId = artA ? artA.id : null;
+    const toId = artB ? artB.id : null;
+    out.push({ label, id: toId ?? fromId, fromId, toId, from, to, kind });
+  };
+  const groupOf = (art) => art.id.split(':')[0];
+  for (const def of HEADLINE_LIBRARIES) {
+    const arts = [];
+    for (const artifactId of def.artifacts) {
+      const found = (byArtifact.get(artifactId) ?? []).filter((art) => !def.groups || def.groups.includes(groupOf(art)));
+      if (def.groups) found.sort((x, y) => def.groups.indexOf(groupOf(x)) - def.groups.indexOf(groupOf(y)));
+      arts.push(...found);
+    }
+    if (def.alternatives) {
+      const pick = (vi) => {
+        for (const art of arts) {
+          const raw = stateAt(art.h, vi);
+          if (raw != null) return { art, raw };
+        }
+        return null;
+      };
+      const pa = pick(a);
+      const pb = pick(b);
+      if (pa || pb) row(def.label, pa?.art, pb?.art, pa?.raw, pb?.raw);
+      continue;
+    }
+    for (const art of arts) {
+      const ra = stateAt(art.h, a);
+      const rb = stateAt(art.h, b);
+      if (ra == null && rb == null) continue;
+      row(def.label, ra == null ? null : art, rb == null ? null : art, ra, rb);
+    }
+  }
+  return out;
+}
+
+/* ========================================================================== */
+/* Extension diff                                                              */
+/* ========================================================================== */
+
+/** Change kinds between two states of one extension: relocated (`r` newly set), status (`s`), renamed (`n`). */
+export function extensionChangeKinds(a, b) {
+  const kinds = [];
+  if (b.r && a.r !== b.r) kinds.push('relocated');
+  else if (a.r && !b.r) kinds.push('unrelocated');
+  if (!a.r && !b.r) {
+    if ((a.s ?? null) !== (b.s ?? null)) kinds.push('status');
+    if (a.n && b.n && a.n !== b.n) kinds.push('renamed');
+  }
+  return kinds;
+}
+
+/** Extension diff between config versions `a` and `b`. */
+export function diffExtensions(extensions, a, b) {
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const x of extensions.exts) {
+    const ia = stateAt(x.h, a);
+    const ib = stateAt(x.h, b);
+    const sa = ia == null ? null : extensions.states[ia];
+    const sb = ib == null ? null : extensions.states[ib];
+    if (!sa && !sb) continue;
+    if (!sa) added.push({ id: x.id, b: sb });
+    else if (!sb) removed.push({ id: x.id, a: sa });
+    else if (ia !== ib) {
+      const kinds = extensionChangeKinds(sa, sb);
+      if (kinds.length) changed.push({ id: x.id, a: sa, b: sb, kinds });
+    }
+  }
+  const sortId = (x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
+  added.sort(sortId);
+  removed.sort(sortId);
+  changed.sort(sortId);
+  const counts = { added: added.length, removed: removed.length, relocated: 0, unrelocated: 0, status: 0, renamed: 0 };
+  for (const c of changed) for (const kind of c.kinds) counts[kind]++;
+  return { a, b, added, removed, changed, counts };
+}
+
+/* ========================================================================== */
+/* Search                                                                      */
+/* ========================================================================== */
+
+const SEGMENT_BOUNDARY = new Set(['.', '-', ':', '_', '"', '[', '/', ' ', '*', '(']);
+const TYPE_ORDER = { property: 0, extension: 1, artifact: 2 };
+
+/**
+ * Match tier of `token` in `field` (both lower-case): 0 exact, 1 prefix, 2 segment start
+ * (after `.`, `-`, `:`, `_`, `"`, `[`, `/`), 3 substring, -1 no match.
+ */
+export function matchTier(field, token) {
+  if (!field || !token) return -1;
+  if (field === token) return 0;
+  if (field.startsWith(token)) return 1;
+  let i = field.indexOf(token, 1);
+  if (i < 0) return -1;
+  for (; i >= 0; i = field.indexOf(token, i + 1)) {
+    if (SEGMENT_BOUNDARY.has(field[i - 1])) return 2;
+  }
+  return 3;
+}
+
+const lower = (s) => String(s).toLowerCase();
+
+/**
+ * Builds the search index over properties (keys, names, aliases, env vars), artifacts (ids) and
+ * extensions (ids, names). Any of the three data files may be missing.
+ */
+export function buildSearchIndex({ config, bom, extensions, versions } = {}) {
+  const entries = [];
+  const lastRelease = versions && versions.length ? versions.length - 1 : null;
+  const cvs = config?.versions ?? [];
+  const lastConfig = cvs.length ? cvs[cvs.length - 1] : null;
+  if (config) {
+    for (const p of config.props) {
+      const si = latestValue(p.h);
+      const s = si == null ? null : config.states[si];
+      const name = s?.n ?? p.k;
+      const aliases = s?.a ?? [];
+      const fields = [...new Set([p.k, name, ...aliases, ...aliases.map(canonicalKey)].map(lower))];
+      const alts = fields.filter((f) => f.startsWith('quarkus.')).map((f) => f.slice(8));
+      let lastSeen = null;
+      for (const vi of cvs) if (stateAt(p.h, vi) != null) lastSeen = vi;
+      entries.push({
+        type: 'property',
+        id: p.k,
+        label: name,
+        fields,
+        alts,
+        env: lower(envVar(name)),
+        ext: s?.e ?? null,
+        current: lastConfig != null && stateAt(p.h, lastConfig) != null,
+        lastSeen,
+      });
+    }
+  }
+  if (bom) {
+    for (const art of bom.artifacts) {
+      const { group, artifact } = splitId(art.id);
+      const raw = lastRelease == null ? latestValue(art.h) : stateAt(art.h, lastRelease);
+      entries.push({
+        type: 'artifact',
+        id: art.id,
+        label: art.id,
+        fields: [lower(art.id)],
+        alts: [lower(artifact), lower(group)],
+        current: raw != null,
+        value: raw === '=' && versions ? versions[lastRelease].v : raw ?? null,
+        follows: raw === '=',
+      });
+    }
+  }
+  if (extensions) {
+    for (const x of extensions.exts) {
+      const si = latestValue(x.h);
+      const s = si == null ? null : extensions.states[si];
+      const fields = [lower(x.id)];
+      if (s?.n) fields.push(lower(s.n));
+      entries.push({
+        type: 'extension',
+        id: x.id,
+        label: x.id,
+        name: s?.n ?? null,
+        status: s?.s ?? null,
+        relocatedTo: s?.r ?? null,
+        fields,
+        alts: [lower(x.id.replace(/^quarkus-/, ''))],
+        current: lastConfig != null && stateAt(x.h, lastConfig) != null,
+      });
+    }
+  }
+  return { entries };
+}
+
+/**
+ * Ranked search: exact > prefix > segment > substring (per whitespace-separated token; an entry must
+ * match every token and is ranked by its weakest token). `quarkus.`-less names, artifactIds and
+ * environment variable names (`QUARKUS_HTTP_PORT`) count as exact/prefix matches.
+ * Ties: current entries first, then property < extension < artifact, then shorter labels.
+ * @returns {{items: object[], total: number}}
+ */
+export function search(index, query, { limit = 20, types } = {}) {
+  const q = lower(query ?? '').trim();
+  if (!q || !index) return { items: [], total: 0 };
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const hits = [];
+  for (const e of index.entries) {
+    if (types && !types.includes(e.type)) continue;
+    let worst = 0;
+    let ok = true;
+    for (const t of tokens) {
+      let best = 9;
+      for (const f of e.fields) {
+        const r = matchTier(f, t);
+        if (r >= 0 && r < best) best = r;
+        if (best === 0) break;
+      }
+      if (best > 1) {
+        for (const f of e.alts) {
+          const r = matchTier(f, t);
+          if (r >= 0 && r <= 1 && r < best) best = r;
+        }
+      }
+      if (best > 0 && e.env && t.includes('_')) {
+        if (e.env === t) best = 0;
+        else if (best > 1 && e.env.startsWith(t)) best = 1;
+        else if (best > 2 && matchTier(e.env, t) >= 0) best = Math.min(best, 3);
+      }
+      if (best === 9) {
+        ok = false;
+        break;
+      }
+      if (best > worst) worst = best;
+    }
+    if (ok) hits.push({ e, tier: worst });
+  }
+  hits.sort(
+    (x, y) =>
+      x.tier - y.tier ||
+      Number(y.e.current) - Number(x.e.current) ||
+      TYPE_ORDER[x.e.type] - TYPE_ORDER[y.e.type] ||
+      x.e.label.length - y.e.label.length ||
+      (x.e.label < y.e.label ? -1 : x.e.label > y.e.label ? 1 : 0),
+  );
+  return { items: hits.slice(0, limit).map((x) => ({ ...x.e, tier: x.tier })), total: hits.length };
+}
+
+/* ========================================================================== */
+/* Timelines for property / artifact / extension pages                         */
+/* ========================================================================== */
+
+/**
+ * Events and presence ranges of one history over the snapshots `cvs` (ascending). Changes are computed
+ * between consecutive entries of `cvs` only, so leaving a snapshot out never creates removed/reintroduced
+ * events of its own. `latest` = the newest state among `cvs`.
+ */
+function presenceTimeline(h, cvs, states, kindsFn) {
+  const events = [];
+  const ranges = [];
+  let prevIdx;
+  let prev = null;
+  let current = null;
+  let seen = false;
+  let latest = null;
+  for (const vi of cvs) {
+    const si = stateAt(h, vi);
+    const s = si == null ? null : states[si];
+    if (s && !prev) {
+      const type = seen ? 'reintroduced' : vi === cvs[0] ? 'present' : 'introduced';
+      events.push({ vi, type, state: s });
+      seen = true;
+      current = { from: vi, to: vi };
+      ranges.push(current);
+    } else if (!s && prev) {
+      events.push({ vi, type: 'removed', prev });
+      current = null;
+    } else if (s && prev) {
+      current.to = vi;
+      if (si !== prevIdx) {
+        const kinds = kindsFn(prev, s);
+        if (kinds.length) events.push({ vi, type: 'changed', kinds, from: prev, to: s });
+      }
+    }
+    if (s) latest = s;
+    prevIdx = si;
+    prev = s;
+  }
+  return { events, ranges, latest, present: prev != null };
+}
+
+/**
+ * Runs a presence timeline over the snapshots that `vis` shows; when the item is absent from all of them but
+ * present in a hidden one, falls back to every snapshot (`widened: true`) so the page is never empty.
+ */
+function visibleTimeline(h, allCvs, states, kindsFn, vis) {
+  const cvs = visibleOnly(allCvs, vis);
+  const t = presenceTimeline(h, cvs, states, kindsFn);
+  if (!vis || t.ranges.length || cvs.length === allCvs.length) return { ...t, cvs, widened: false, hiddenSnapshots: allCvs.length - cvs.length };
+  const all = presenceTimeline(h, allCvs, states, kindsFn);
+  if (!all.ranges.length) return { ...t, cvs, widened: false, hiddenSnapshots: allCvs.length - cvs.length };
+  return { ...all, cvs: [...allCvs], widened: true, hiddenSnapshots: 0 };
+}
+
+/**
+ * History of one config property over the config snapshots: events (present in first snapshot,
+ * introduced, changed with kinds, removed, reintroduced), presence ranges and the latest state.
+ * With `vis` (see releaseVisibility), only the snapshots it shows are used; `cvs` lists the snapshots
+ * used, `hiddenSnapshots` how many were left out, `widened` that the property only exists in hidden ones.
+ * @param {object} config config.json
+ * @param {string|object} keyOrProp canonical key or the `props` entry
+ */
+export function propertyHistory(config, keyOrProp, { vis } = {}) {
+  const prop = typeof keyOrProp === 'object' ? keyOrProp : config.props.find((p) => p.k === keyOrProp);
+  if (!prop) return null;
+  const t = visibleTimeline(prop.h, config.versions, config.states, configChangeKinds, vis);
+  return { key: prop.k, prop, ...t };
+}
+
+/**
+ * History of one extension over the config snapshots (same event model as properties, change kinds
+ * relocated / unrelocated / status / renamed). `vis` as for propertyHistory.
+ */
+export function extensionHistory(extensions, id, configVis, { vis } = {}) {
+  const x = extensions.exts.find((e) => e.id === id);
+  if (!x) return null;
+  const t = visibleTimeline(x.h, configVis, extensions.states, extensionChangeKinds, vis);
+  return { id, ext: x, ...t };
+}
+
+function artifactRangesOver(art, versions, indices) {
+  const ranges = [];
+  let cur = null;
+  for (const i of indices) {
+    const raw = stateAt(art.h, i);
+    const pre = isPreRelease(versions[i]) ? 1 : 0;
+    if (cur && cur.raw === raw) {
+      cur.to = i;
+      cur.count++;
+      cur.pre += pre;
+      continue;
+    }
+    cur = { from: i, to: i, count: 1, pre, raw, managed: raw != null, follows: raw === '=', value: raw === '=' || raw == null ? null : raw };
+    if (raw === undefined) cur.before = true;
+    ranges.push(cur);
+  }
+  let prevManaged = null;
+  for (const r of ranges) {
+    if (!r.managed) {
+      if (prevManaged && !r.before) r.kind = 'removed';
+      prevManaged = null;
+      continue;
+    }
+    const startValue = r.follows ? versions[r.from].v : r.value;
+    if (!prevManaged) r.kind = r.from === indices[0] ? null : 'added';
+    else {
+      const endValue = prevManaged.follows ? versions[prevManaged.to].v : prevManaged.value;
+      r.kind = bomChangeKind(endValue, startValue);
+    }
+    prevManaged = r;
+  }
+  return ranges;
+}
+
+/**
+ * Version ranges of one managed artifact across the releases. Each range is
+ * `{from, to, count, pre, raw, managed, follows, value, kind}`: a run of consecutive releases with the same value
+ * (`from`/`to` are release indices, `count` the releases in the run, `pre` how many of them are pre-releases);
+ * `follows` marks `"="` (same as the Quarkus release), `kind` is the change from the previous managed range
+ * (major/minor/patch/other/downgrade/added/removed).
+ * With `vis` (see releaseVisibility), only the releases it shows are used, so a hidden pre-release never splits
+ * a range; when the artifact is managed only in hidden releases, every release is used (`widened`).
+ */
+export function artifactHistory(bom, id, versions, { vis } = {}) {
+  const art = bom.artifacts.find((x) => x.id === id);
+  if (!art) return null;
+  const everything = versions.map((_, i) => i);
+  let indices = vis ? vis.indices : everything;
+  let ranges = artifactRangesOver(art, versions, indices);
+  let widened = false;
+  if (vis && indices.length < everything.length && !ranges.some((r) => r.managed)) {
+    const all = artifactRangesOver(art, versions, everything);
+    if (all.some((r) => r.managed)) {
+      indices = everything;
+      ranges = all;
+      widened = true;
+    }
+  }
+  const last = indices.length ? indices[indices.length - 1] : versions.length - 1;
+  const raw = stateAt(art.h, last);
+  const managedRanges = ranges.filter((r) => r.managed);
+  return {
+    id,
+    ...splitId(id),
+    ranges,
+    indices,
+    widened,
+    hiddenReleases: versions.length - indices.length,
+    last,
+    current: { raw, managed: raw != null, follows: raw === '=', value: raw === '=' ? versions[last].v : raw ?? null },
+    firstManaged: managedRanges.length ? managedRanges[0].from : null,
+    lastManaged: managedRanges.length ? managedRanges[managedRanges.length - 1].to : null,
+  };
+}
+
+/* ========================================================================== */
+/* Release selection helpers (home defaults, quick picks, version page)        */
+/* ========================================================================== */
+
+/** Index of the newest final release, or -1. */
+export function newestFinalIndex(versions) {
+  for (let i = versions.length - 1; i >= 0; i--) if (!versions[i].pre && isFinal(versions[i].v)) return i;
+  return -1;
+}
+
+/** Index of the newest release in a stream (finals preferred), or -1. */
+export function newestInStream(versions, s, { finalOnly = true } = {}) {
+  let any = -1;
+  for (let i = versions.length - 1; i >= 0; i--) {
+    if (streamOf(versions[i]) !== s) continue;
+    if (any < 0) any = i;
+    if (!finalOnly || (!versions[i].pre && isFinal(versions[i].v))) return i;
+  }
+  return any;
+}
+
+/** The LTS streams that have at least one release, ascending. */
+export function ltsStreamsPresent(versionsJson) {
+  const list = versionsJson.versions ?? [];
+  const declared = new Set(versionsJson.lts ?? []);
+  for (const x of list) if (x.lts) declared.add(streamOf(x));
+  const present = new Set(list.map(streamOf));
+  return [...declared].filter((s) => present.has(s)).sort(compareVersions);
+}
+
+function streamsAscending(list) {
+  return [...new Set(list.map(streamOf))].sort(compareVersions);
+}
+
+/**
+ * Index of a stream's first final release (x.y.0 or x.y.0.Final when the dataset has it, else its lowest final,
+ * such as 3.8.1), or -1 when the stream has no final release. `versions` must be ascending.
+ */
+export function streamStartIndex(versions, s) {
+  const list = Array.isArray(versions) ? versions : [];
+  for (let i = 0; i < list.length; i++) if (streamOf(list[i]) === s && !isPreRelease(list[i])) return i;
+  return -1;
+}
+
+/**
+ * The time between two streams: between the dates of each stream's first final release (`3.27` → `3.33`:
+ * `6 months`). Null when either stream has no final release yet or a date is missing.
+ * @returns {{from:number, to:number, label:string}|null} release indices of the two first finals and the span
+ */
+export function streamSpan(versions, fromStream, toStream) {
+  const from = streamStartIndex(versions, fromStream);
+  const to = streamStartIndex(versions, toStream);
+  if (from < 0 || to < 0) return null;
+  const label = spanLabel(versions[from].date, versions[to].date);
+  return label ? { from, to, label } : null;
+}
+
+/**
+ * Home page defaults: the latest patch of the previous LTS → the newest final
+ * (previous LTS = newest LTS stream older than the newest final's stream).
+ */
+export function defaultPair(versionsJson) {
+  const list = versionsJson.versions ?? [];
+  if (!list.length) return null;
+  let to = newestFinalIndex(list);
+  if (to < 0) to = list.length - 1;
+  const toStream = streamOf(list[to]);
+  const prevLts = ltsStreamsPresent(versionsJson).filter((s) => compareVersions(s, toStream) < 0).pop();
+  let from = prevLts ? newestInStream(list, prevLts) : -1;
+  if (from < 0) {
+    const older = streamsAscending(list).filter((s) => compareVersions(s, toStream) < 0).pop();
+    from = older ? newestInStream(list, older) : 0;
+  }
+  return { from, to };
+}
+
+/**
+ * Quick comparisons: LTS → next LTS (newest patch of each), latest LTS → newest final,
+ * newest final → pre-release (when a newer pre-release exists). `span` is the time between the two streams
+ * (streamSpan: the dates of their first finals), null when the target stream has no final yet.
+ * @returns {Array<{kind:'lts'|'latest'|'pre', from:number, to:number, fromStream:string, toStream:string,
+ *   span:{from:number, to:number, label:string}|null}>}
+ */
+export function quickPicks(versionsJson) {
+  const list = versionsJson.versions ?? [];
+  const picks = [];
+  const push = (kind, from, to, fromStream, toStream) =>
+    picks.push({ kind, from, to, fromStream, toStream, span: streamSpan(list, fromStream, toStream) });
+  const lts = ltsStreamsPresent(versionsJson);
+  for (let i = 1; i < lts.length; i++) {
+    const from = newestInStream(list, lts[i - 1]);
+    const to = newestInStream(list, lts[i]);
+    if (from >= 0 && to >= 0 && from !== to) push('lts', from, to, lts[i - 1], lts[i]);
+  }
+  const nf = newestFinalIndex(list);
+  if (lts.length && nf >= 0) {
+    const latest = newestInStream(list, lts[lts.length - 1]);
+    if (latest >= 0 && latest !== nf) push('latest', latest, nf, lts[lts.length - 1], streamOf(list[nf]));
+  }
+  const newest = list.length - 1;
+  if (nf >= 0 && newest > nf && compareVersions(list[newest].v, list[nf].v) > 0) {
+    push('pre', nf, newest, streamOf(list[nf]), streamOf(list[newest]));
+  }
+  return picks;
+}
+
+/**
+ * Quick compares for a release page (-1 when absent):
+ * - previousPatch: the previous final of the same stream (pre-releases are not patches);
+ * - previousPre: for a pre-release, the previous pre-release of its stream; for the first final of a stream,
+ *   the stream's newest pre-release ("what changed since the CR");
+ * - previousMinor: the newest final of the nearest older stream;
+ * - previousLts: the newest final of the newest LTS stream older than this release's stream;
+ * - older / newer: the neighbouring releases.
+ * With `vis` (see releaseVisibility), pre-releases it hides are skipped by previousPre, older and newer.
+ */
+export function versionNeighbours(versionsJson, vi, { vis } = {}) {
+  const list = versionsJson.versions ?? [];
+  const shown = (i) => !vis || !!vis.visible[i];
+  const s = streamOf(list[vi]);
+  let previousPatch = -1;
+  let previousPre = -1;
+  for (let i = vi - 1; i >= 0; i--) {
+    if (streamOf(list[i]) !== s) continue;
+    if (isPreRelease(list[i])) {
+      if (previousPre < 0 && shown(i)) previousPre = i;
+    } else if (previousPatch < 0) {
+      previousPatch = i;
+    }
+  }
+  if (!isPreRelease(list[vi]) && previousPatch >= 0) previousPre = -1;
+  const olderStream = streamsAscending(list).filter((x) => compareVersions(x, s) < 0).pop();
+  const previousMinor = olderStream ? newestInStream(list, olderStream) : -1;
+  const olderLts = ltsStreamsPresent(versionsJson).filter((x) => compareVersions(x, s) < 0).pop();
+  const previousLts = olderLts ? newestInStream(list, olderLts) : -1;
+  let older = -1;
+  for (let i = vi - 1; i >= 0; i--) {
+    if (shown(i)) {
+      older = i;
+      break;
+    }
+  }
+  let newer = -1;
+  for (let i = vi + 1; i < list.length; i++) {
+    if (shown(i)) {
+      newer = i;
+      break;
+    }
+  }
+  return { previousPatch, previousPre, previousMinor, previousLts, older, newer };
+}
+
+/* ========================================================================== */
+/* Formatting                                                                   */
+/* ========================================================================== */
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function parseIsoDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ''));
+  if (!m) return null;
+  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+}
+
+/** `2025-03-26` → `26 Mar 2025` (no locale or time-zone dependence); unknown input is returned as-is. */
+export function formatDate(iso) {
+  const p = parseIsoDate(iso);
+  if (!p || p.m < 1 || p.m > 12) return String(iso ?? '');
+  return `${p.d} ${MONTHS[p.m - 1]} ${p.y}`;
+}
+
+/**
+ * The compare header's phrase for two release dates, order-insensitive: `released the same day`,
+ * `released 1 day apart`, `released 6 months apart`. Empty when a date is missing.
+ */
+export function releasedApart(a, b) {
+  const span = spanLabel(a, b);
+  if (!span) return '';
+  return span === 'same day' ? 'released the same day' : `released ${span} apart`;
+}
+
+/** A span that reads on its own next to two releases: `same day`, `12 days apart`, `6 months apart`. */
+export function spanApart(a, b) {
+  const span = spanLabel(a, b);
+  if (!span || span === 'same day') return span;
+  return `${span} apart`;
+}
+
+/** Human span between two ISO dates, order-insensitive: `same day`, `12 days`, `11 months`, `1 year 2 months`. */
+export function spanLabel(a, b) {
+  const x0 = parseIsoDate(a);
+  const y0 = parseIsoDate(b);
+  if (!x0 || !y0) return '';
+  const days = (p) => Date.UTC(p.y, p.m - 1, p.d) / 86400000;
+  const [x, y] = days(x0) <= days(y0) ? [x0, y0] : [y0, x0];
+  const d = Math.round(days(y) - days(x));
+  if (d === 0) return 'same day';
+  if (d < 45) return `${d} day${d === 1 ? '' : 's'}`;
+  const months = (y.y - x.y) * 12 + (y.m - x.m) - (y.d < x.d ? 1 : 0);
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'}`;
+  const years = Math.floor(months / 12);
+  const rest = months % 12;
+  return `${years} year${years === 1 ? '' : 's'}${rest ? ` ${rest} month${rest === 1 ? '' : 's'}` : ''}`;
+}

@@ -1,0 +1,103 @@
+{
+  "configRoots": [
+    {
+      "extension": {
+        "artifactId": "quarkus-core",
+        "detected": true,
+        "groupId": "io.quarkus",
+        "name": "Core",
+        "nameSource": "EXTENSION_METADATA",
+        "splitOnConfigRootDescription": true
+      },
+      "items": [
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+          "escapeDefaultValue": true,
+          "list": true,
+          "optional": true,
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+            "environmentVariable": "QUARKUS_PROFILE",
+            "property": "quarkus.profile"
+          },
+          "phase": "RUN_TIME",
+          "sourceElementName": "profile",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.runtime.ConfigConfig",
+          "type": "java.util.List",
+          "typeDescription": "string"
+        }
+      ],
+      "prefix": "quarkus",
+      "qualifiedNames": [
+        "io.quarkus.runtime.ConfigConfig"
+      ],
+      "topLevelPrefix": "quarkus.config"
+    },
+    {
+      "extension": {
+        "artifactId": "quarkus-core",
+        "detected": true,
+        "groupId": "io.quarkus",
+        "name": "Core",
+        "nameSource": "EXTENSION_METADATA",
+        "splitOnConfigRootDescription": true
+      },
+      "items": [
+        {
+          "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection",
+          "items": [
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+              "defaultValue": "inherit",
+              "escapeDefaultValue": true,
+              "path": {
+                "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                "environmentVariable": "QUARKUS_LOG_CATEGORY__CATEGORIES__LEVEL",
+                "property": "quarkus.log.category.\"categories\".level"
+              },
+              "phase": "RUN_TIME",
+              "sourceElementName": "level",
+              "sourceElementType": "METHOD",
+              "sourceType": "io.quarkus.runtime.logging.LogRuntimeConfig.CategoryConfig",
+              "type": "io.quarkus.runtime.logging.InheritableLevel",
+              "typeDescription": "InheritableLevel",
+              "withinMap": true
+            },
+            {
+              "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty",
+              "escapeDefaultValue": true,
+              "list": true,
+              "optional": true,
+              "path": {
+                "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigProperty$PropertyPath",
+                "environmentVariable": "QUARKUS_LOG_CATEGORY__CATEGORIES__HANDLERS",
+                "property": "quarkus.log.category.\"categories\".handlers"
+              },
+              "phase": "RUN_TIME",
+              "sourceElementName": "handlers",
+              "sourceElementType": "METHOD",
+              "sourceType": "io.quarkus.runtime.logging.LogRuntimeConfig.CategoryConfig",
+              "type": "java.util.List",
+              "typeDescription": "string",
+              "withinMap": true
+            }
+          ],
+          "path": {
+            "@class": "io.quarkus.annotation.processor.documentation.config.model.ConfigSection$SectionPath",
+            "property": "quarkus.log.category"
+          },
+          "sourceElementName": "categories",
+          "sourceElementType": "METHOD",
+          "sourceType": "io.quarkus.runtime.logging.LogRuntimeConfig",
+          "type": "io.quarkus.runtime.logging.LogRuntimeConfig.CategoryConfig"
+        }
+      ],
+      "prefix": "quarkus.log",
+      "qualifiedNames": [
+        "io.quarkus.runtime.logging.LogRuntimeConfig"
+      ],
+      "topLevelPrefix": "quarkus.log"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Build output (any -DbuildDir=target-x variant)
+target*/
+# HTTP cache, snapshots and the run copy of the jar: re-creatable, never committed
+work/
+# Design notes and research, kept on the maintainer's machine only
+docs/
+# Research and check scripts (Python), kept local like docs/
+tools/
+# IDE and local tool settings
+.idea/
+*.iml
+.vscode/
+.claude/
+# Python caches
+__pycache__/
+*.pyc
+# Node
+node_modules/
+# NOT ignored, both committed:
+# - dataset/   the extracted releases: released data never needs Maven again
+# - site/data/ the site data that `assemble` builds from dataset/

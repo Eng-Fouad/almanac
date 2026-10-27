@@ -1,0 +1,37 @@
+{
+  "elements": {
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfig.requestScopedSessionEnabled": {
+      "description": "Enable or disable access to a Hibernate ORM `EntityManager`/`Session`/`StatelessSession`\n*when no transaction is active* but a request scope is.\n\nWhen enabled, the corresponding sessions will be read-only.\n\nDefaults to enabled for backwards compatibility, but disabling this is recommended,\nto avoid inconsistent resulsts caused by queries running outside of transactions.",
+      "format": "JAVADOC"
+    },
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitDatabaseGeneration.generation": {
+      "deprecated": "Use {@code quarkus.hibernate-orm.schema-management.strategy} instead.",
+      "description": "Select whether the database schema is generated or not.\n\n`drop-and-create` is awesome in development mode.\n\nThis defaults to 'none', however if Dev Services is in use and no other extensions that manage the schema are present\nthis will default to 'drop-and-create'.\n\nAccepted values: `none`, `create`, `drop-and-create`, `drop`, `update`, `validate`.",
+      "format": "JAVADOC"
+    },
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitSchemaManagement.createSchemas": {
+      "description": "If Hibernate ORM should create the schemas automatically (for databases supporting them).",
+      "format": "JAVADOC"
+    },
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.HibernateOrmConfigPersistenceUnitSchemaManagement.strategy": {
+      "description": "Select whether the database schema is generated or not.\n\n`drop-and-create` is awesome in development mode.\n\nThis defaults to 'none'.\n\nHowever if Dev Services is in use and no other extensions that manage the schema are present\nthe value will be automatically overridden to 'drop-and-create'.\n\nAccepted values: `none`, `create`, `drop-and-create`, `drop`, `update`, `validate`.",
+      "format": "ASCIIDOC"
+    },
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.active": {
+      "description": "Whether this persistence unit should be active at runtime.\n\nSee xref:hibernate-orm.adoc#persistence-unit-active[this section of the documentation].\n\nNote that if Hibernate ORM is disabled (i.e. `quarkus.hibernate-orm.enabled` is set to `false`),\nall persistence units are deactivated, and setting this property to `true` will fail.",
+      "format": "ASCIIDOC"
+    },
+    "io.quarkus.hibernate.orm.runtime.HibernateOrmRuntimeConfigPersistenceUnit.unsupportedProperties": {
+      "description": "Properties that should be passed on directly to Hibernate ORM.\nUse the full configuration property key here,\nfor instance `quarkus.hibernate-orm.unsupported-properties.\"hibernate.order_inserts\" = true`.\n\n[WARNING]\n====\nProperties set here are completely unsupported:\nas Quarkus doesn't generally know about these properties and their purpose,\nthere is absolutely no guarantee that they will work correctly,\nand even if they do, that may change when upgrading to a newer version of Quarkus\n(even just a micro/patch version).\n====\n\nConsider using a supported configuration property before falling back to unsupported ones.\nIf none exists, make sure to file a feature request so that a supported configuration property can be added to Quarkus,\nand more importantly so that the configuration property is tested regularly.",
+      "format": "ASCIIDOC"
+    }
+  },
+  "extension": {
+    "artifactId": "quarkus-hibernate-orm",
+    "detected": true,
+    "groupId": "io.quarkus",
+    "guideUrl": "https://quarkus.io/guides/hibernate-orm",
+    "name": "Hibernate ORM",
+    "nameSource": "EXTENSION_METADATA"
+  }
+}

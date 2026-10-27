@@ -1,0 +1,116 @@
+package com.acme;
+
+import io.quarkus.runtime.annotations.ConfigDocDefault;
+import io.quarkus.runtime.annotations.ConfigDocIgnore;
+import io.quarkus.runtime.annotations.ConfigDocMapKey;
+import io.quarkus.runtime.annotations.ConfigDocSection;
+
+import java.util.Map;
+
+/** Every way the doc annotations write their values; javac folds the same constants into the class files. */
+public interface LiteralForms {
+
+    String PREFIX = "pre";
+    String DERIVED = PREFIX + "-" + Nested.SUFFIX;
+
+    @ConfigDocDefault("plain")
+    String plain();
+
+    @ConfigDocDefault(value = "named")
+    String named();
+
+    @ConfigDocDefault("tab\there \"quoted\" back\\slash é \101\60 \s")
+    String escapes();
+
+    @ConfigDocDefault("""
+            first line
+              indented "quotes" \"""
+            trailing spaces\s
+            joined \
+            line
+            """)
+    String textBlock();
+
+    @ConfigDocDefault("""
+        no final newline""")
+    String textBlockWithoutNewline();
+
+    @ConfigDocDefault("a" + "b" + 1 + 2 + 'c' + true + 1.5 + 2.5f + 10L + -3)
+    String concatenation();
+
+    @ConfigDocDefault(1 + 2 + "x" + ('a' + 1))
+    String numericFirst();
+
+    @ConfigDocDefault(PREFIX)
+    String constant();
+
+    @ConfigDocDefault(DERIVED)
+    String derived();
+
+    @ConfigDocDefault(Nested.SUFFIX)
+    String nestedConstant();
+
+    @ConfigDocDefault(LiteralForms.Nested.SUFFIX)
+    String qualifiedConstant();
+
+    @ConfigDocDefault(com.acme.LiteralForms.PREFIX)
+    String fullyQualifiedConstant();
+
+    @ConfigDocDefault(Holder.VALUE)
+    String otherTopLevelType();
+
+    @ConfigDocDefault((String) "cast")
+    String cast();
+
+    @ConfigDocDefault(("parenthesised"))
+    String parenthesised();
+
+    @ConfigDocMapKey("tenant")
+    Map<String, String> tenants();
+
+    @io.quarkus.runtime.annotations.ConfigDocMapKey("qualified")
+    Map<String, String> qualifiedAnnotation();
+
+    @ConfigDocSection
+    Nested section();
+
+    @ConfigDocIgnore
+    String ignored();
+
+    @ConfigDocDefault("several")
+    @ConfigDocMapKey("key")
+    @ConfigDocSection
+    Map<String, Nested.Deeper> several();
+
+    String unannotated();
+
+    default String helper(String argument) {
+        return argument;
+    }
+
+    interface Nested {
+
+        String SUFFIX = "suf";
+
+        @ConfigDocDefault(SUFFIX)
+        String inner();
+
+        @ConfigDocDefault(PREFIX)
+        String outer();
+
+        interface Deeper {
+
+            @ConfigDocMapKey(Nested.SUFFIX + PREFIX)
+            Map<String, String> deep();
+        }
+    }
+}
+
+/** A second top-level type of the file. */
+final class Holder {
+
+    static final String VALUE = "held";
+
+    private Holder() {
+    }
+}
