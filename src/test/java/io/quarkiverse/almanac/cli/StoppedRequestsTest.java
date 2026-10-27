@@ -21,6 +21,7 @@ import java.io.StringWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,6 +43,7 @@ class StoppedRequestsTest {
     private static final List<String> RELEASES = List.of("3.90.0", "3.90.1", "3.90.2", "3.90.3", "3.90.4",
             "3.90.5", "3.90.6", "3.90.7", "3.90.8", "3.90.9", "3.90.10", "3.90.11");
     private static final String PLATFORM = "cache/io/quarkus/quarkus-bom-quarkus-platform-descriptor/";
+    private static final Pattern BOM_POM = Pattern.compile("/maven2/io/quarkus/quarkus-bom/([^/]+)/[^/]+\\.pom");
 
     /// Exit code and log (standard error) of one run.
     private record Run(int exitCode, String log) {
@@ -61,6 +63,11 @@ class StoppedRequestsTest {
     private ScratchDir dir;
     private HttpServer refusing;
     private final List<String> requested = new CopyOnWriteArrayList<>();
+    /// How many requests for a BOM pom the repository answers before it refuses the next one; 0: it refuses all.
+    private volatile int answered;
+    /// The stop marker that the repository writes, as another command would, while it answers its last BOM pom;
+    /// null: it refuses the next request instead.
+    private volatile Path marker;
 
     @BeforeEach
     void start() throws IOException {
@@ -68,7 +75,23 @@ class StoppedRequestsTest {
         refusing = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         refusing.createContext("/", exchange -> {
             requested.add(exchange.getRequestURI().getPath());
-            exchange.sendResponseHeaders(403, -1);
+            Matcher bom = BOM_POM.matcher(exchange.getRequestURI().getPath());
+            if (requested.size() > answered || !bom.matches()) {
+                exchange.sendResponseHeaders(403, -1);
+                exchange.close();
+                return;
+            }
+            if (requested.size() == answered && marker != null) {
+                AtomicFiles.writeString(marker, (System.currentTimeMillis() + 3_600_000) + "\nHTTP 403 for another "
+                        + "command\n");
+            }
+            byte[] pom = ("<project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId><version>"
+                    + bom.group(1) + "</version><dependencyManagement><dependencies><dependency><groupId>io.quarkus"
+                    + "</groupId><artifactId>quarkus-core</artifactId><version>" + bom.group(1) + "</version>"
+                    + "</dependency></dependencies></dependencyManagement></project>").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Last-Modified", "Thu, 01 Jan 2026 00:00:00 GMT");
+            exchange.sendResponseHeaders(200, pom.length);
+            exchange.getResponseBody().write(pom);
             exchange.close();
         });
         refusing.start();
@@ -198,6 +221,93 @@ class StoppedRequestsTest {
         assertTrue(run.log().contains("error: config: 1 of 1 releases not attempted, since requests stopped\n"),
                 run.log());
         assertEquals(List.of(), run.lines("error: config 3.90."), run.log());
+    }
+
+    @Test
+    void releasesWrittenBeforeTheStopStayAndEveryReleaseIsCounted() throws Exception {
+        // the repository answers the first BOM poms, then refuses one; or another command stops the requests meanwhile
+        for (boolean byMarker : List.of(false, true)) {
+            String name = byMarker ? "bom-marker" : "bom-refused";
+            Path work = work(name);
+            requested.clear();
+            answered = byMarker ? 3 : 2;
+            marker = byMarker ? work.resolve("cache").resolve(Pacer.STOP_FILE) : null;
+
+            Run run = run(concat(List.of("bom", "--since", "3.90"), options(name, "--concurrency", "1")));
+
+            assertEquals(1, run.exitCode(), run.log());
+            assertEquals(answered + (byMarker ? 0 : 1), requested.size(), requested.toString());
+            // the releases whose BOM pom was answered are written, whichever started first; no other one
+            List<String> written = RELEASES.stream()
+                    .filter(release -> Files.exists(work.resolve("snapshots/" + release + "/bom.json"))).toList();
+            List<String> served = requested.subList(0, answered).stream()
+                    .map(path -> path.split("/")[5]).sorted().toList();
+            assertEquals(served, written.stream().sorted().toList(), run.log());
+            assertEquals(1, run.lines("error: bom: requests stopped (").size(), run.log());
+            int failed = run.count("error: bom: (\\d+) of 12 releases failed");
+            int notAttempted = run.count("error: bom: (\\d+) of 12 releases not attempted, since requests stopped");
+            assertEquals(1, failed, run.log());
+            assertEquals(12, written.size() + failed + notAttempted, run.log());
+        }
+    }
+
+    @Test
+    void theStopOfTheLastReleaseToStartIsLoggedToo() throws Exception {
+        work("bom");
+        Run bom = run(concat(List.of("bom", "--versions", "3.90.0"), options("bom")));
+        assertEquals(1, bom.exitCode(), bom.log());
+        assertEquals(1, bom.lines("error: bom: requests stopped (HTTP 403 for ").size(), bom.log());
+        assertTrue(bom.log().contains("error: bom: 1 of 1 releases failed\n"), bom.log());
+        assertFalse(bom.log().contains("not attempted"), bom.log());
+
+        work("config");
+        Run config = run(concat(List.of("config", "--versions", "3.90.0"), options("config")));
+        assertEquals(1, config.exitCode(), config.log());
+        assertEquals(1, config.lines("error: config: requests stopped (HTTP 403 for ").size(), config.log());
+        assertTrue(config.log().contains("error: config: 1 of 1 releases produced no snapshot\n"), config.log());
+        assertFalse(config.log().contains("not attempted"), config.log());
+
+        Path work = work("extensions");
+        AtomicFiles.writeString(work.resolve(PLATFORM + "maven-metadata.xml"), metadata(List.of("3.90.0")));
+        AtomicFiles.writeString(work.resolve("cache/io/quarkus/quarkus-bom-descriptor-json/maven-metadata.xml"),
+                metadata(List.of()));
+        Run extensions = run(concat(List.of("extensions", "--versions", "3.90.0"), options("extensions")));
+        assertEquals(1, extensions.exitCode(), extensions.log());
+        assertEquals(1, extensions.lines("error: extensions: requests stopped (HTTP 403 for ").size(),
+                extensions.log());
+        assertTrue(extensions.log().contains("error: extensions: 1 of 1 releases failed\n"), extensions.log());
+        assertFalse(extensions.log().contains("not attempted"), extensions.log());
+    }
+
+    @Test
+    void releasesNotAttemptedFailTheCommandWhenNoReleaseFailed() throws Exception {
+        // the stop is in force before the pass: the release list comes from the dataset, no release starts
+        for (List<String> command : List.of(List.of("bom", "--since", "3.90"),
+                List.of("config", "--versions", "3.90.0,3.90.1,3.90.2,3.90.3"),
+                List.of("extensions", "--versions", "3.90.0,3.90.1,3.90.2,3.90.3"))) {
+            String name = command.getFirst() + "-before";
+            Path cache = dir.resolve(name).resolve("cache");
+            AtomicFiles.writeString(cache.resolve(Pacer.STOP_FILE),
+                    (System.currentTimeMillis() + 3_600_000) + "\nHTTP 403 for another command\n");
+            StringBuilder releases = new StringBuilder();
+            for (String release : RELEASES.subList(0, 4)) {
+                releases.append("{\"version\":\"").append(release).append("\",\"date\":\"2026-01-01\"}\n");
+            }
+            AtomicFiles.writeString(dir.resolve(name + "-dataset").resolve("releases.jsonl"), releases.toString());
+            requested.clear();
+
+            Run run = run(concat(command, options(name)));
+
+            assertEquals(1, run.exitCode(), run.log());
+            assertEquals(List.of(), requested);
+            String prefix = "error: " + command.getFirst() + ": ";
+            assertEquals(1, run.lines(prefix + "requests stopped (").size(), run.log());
+            assertTrue(run.log().contains(prefix + "4 of 4 releases not attempted, since requests stopped\n"),
+                    run.log());
+            assertEquals(List.of(), run.lines("error: " + command.getFirst() + " 3.90."), run.log());
+            assertFalse(run.log().contains("releases failed") || run.log().contains("produced no snapshot"),
+                    run.log());
+        }
     }
 
     private static String metadata(List<String> versions) {
