@@ -5,7 +5,10 @@ import java.io.InterruptedIOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,7 +30,8 @@ public final class Parallel {
 
     /// Applies `function` to every item with at most `parallelism` tasks running at once and returns
     /// the results in input order. Every task runs to completion; the first failure is then rethrown with the
-    /// others attached as suppressed exceptions.
+    /// others attached as suppressed exceptions, each once: tasks can fail with one shared exception, such as the
+    /// failed fetch of a pom that several of them waited for.
     public static <T, R> List<R> map(Collection<T> items, int parallelism, IoFunction<? super T, ? extends R> function)
             throws IOException {
         Semaphore permits = new Semaphore(Math.max(1, parallelism));
@@ -46,10 +50,14 @@ public final class Parallel {
         }
         List<R> results = new ArrayList<>(futures.size());
         Throwable failure = null;
+        Set<Throwable> failures = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Future<R> future : futures) {
             try {
                 results.add(future.get());
             } catch (ExecutionException e) {
+                if (!failures.add(e.getCause())) {
+                    continue;
+                }
                 if (failure == null) {
                     failure = e.getCause();
                 } else {

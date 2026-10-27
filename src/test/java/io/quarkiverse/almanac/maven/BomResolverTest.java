@@ -1,6 +1,7 @@
 package io.quarkiverse.almanac.maven;
 
 import io.quarkiverse.almanac.model.ManagedDep;
+import io.quarkiverse.almanac.util.Parallel;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -985,5 +986,56 @@ class BomResolverTest {
             }
         }
         assertEquals(1, reads.get());
+    }
+
+    @Test
+    void resolutionsInParallelThatShareAFailedFetchFailWithItsStop() throws Exception {
+        // as bom resolves releases: Parallel.map gets the same exception from both tasks and must rethrow it as it is
+        Http.StoppedException stopped = new Http.StoppedException("not requesting g:parent:1: requests stopped");
+        CountDownLatch fetching = new CountDownLatch(1);
+        CountDownLatch fail = new CountDownLatch(1);
+        BomResolver resolver = new BomResolver((groupId, artifactId, version) -> {
+            fetching.countDown();
+            try {
+                fail.await();
+            } catch (InterruptedException e) {
+                throw new InterruptedIOException("interrupted");
+            }
+            throw stopped;
+        });
+        AtomicReference<Thread> waiter = new AtomicReference<>();
+        // once the second resolution waits for the fetch of the first, the fetch fails
+        Thread release = new Thread(() -> {
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            try {
+                while (System.nanoTime() < deadline
+                        && (waiter.get() == null || waiter.get().getState() != Thread.State.WAITING)) {
+                    Thread.sleep(5);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            fail.countDown();
+        });
+        release.start();
+        try {
+            IOException e = assertThrows(IOException.class, () -> Parallel.map(List.of("a", "b"), 2, name -> {
+                if (name.equals("b")) {
+                    try {
+                        fetching.await();
+                    } catch (InterruptedException interrupted) {
+                        throw new InterruptedIOException("interrupted");
+                    }
+                    waiter.set(Thread.currentThread());
+                }
+                return resolver.resolve(project("g:bom-" + name + ":1", parent("g:parent:1"))
+                        .getBytes(StandardCharsets.UTF_8), "1");
+            }));
+            assertSame(stopped, e);
+            assertEquals(0, e.getSuppressed().length);
+        } finally {
+            fail.countDown();
+            release.join();
+        }
     }
 }
