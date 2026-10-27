@@ -17,7 +17,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 
-/// Files and encoding rules of the committed dataset, format 1 (`dataset/README.txt`, written by
+/// Files and encoding rules of the committed dataset, format 1 (`dataset/README.md`, written by
 /// [#readme()], describes them for readers of the data).
 public final class DatasetFormat {
 
@@ -27,7 +27,7 @@ public final class DatasetFormat {
     /// The default dataset folder, relative to the working directory like `--work work`.
     public static final String DEFAULT_DIR = "dataset";
 
-    public static final String README = "README.txt";
+    public static final String README = "README.md";
     public static final String RELEASES = "releases.jsonl";
     public static final String BOM = "bom.jsonl";
     public static final String CONFIG = "config.jsonl";
@@ -59,7 +59,7 @@ public final class DatasetFormat {
     /// such a config as not validated, since map keys and documented defaults may be wrong.
     public static final String DOC_ANNOTATION_WARNING = "doc annotations";
 
-    /// First line of `README.txt`; readers check it to recognise the format.
+    /// First line of `README.md`; readers check it to recognise the format.
     static final String README_TITLE = "# Quarkus Almanac dataset, format " + VERSION;
 
     private static final int STATE_ID_HEX_DIGITS = 16;
@@ -131,7 +131,7 @@ public final class DatasetFormat {
                 + "together; restore the folder (for example with git checkout) and repeat the change";
     }
 
-    /// The dataset's `README.txt`. It is generated, so writing the same dataset twice gives the same bytes.
+    /// The dataset's `README.md`. It is generated, so writing the same dataset twice gives the same bytes.
     public static String readme() {
         return README_TITLE + """
 

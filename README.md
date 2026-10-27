@@ -12,7 +12,7 @@ It covers Quarkus 3.0 and later, pre-releases included, with config taken at the
 - `src/`: a Java 21 command-line tool that reads published Quarkus artifacts from Maven Central: the BOM of every
   release, and the config and extension metadata of the newest release of each stream (from the config model Quarkus
   ships from 3.25 on, reconstructed from bytecode before that).
-- `dataset/`: every extracted release, kept losslessly as sorted JSON Lines (`dataset/README.txt` describes the
+- `dataset/`: every extracted release, kept losslessly as sorted JSON Lines (`dataset/README.md` describes the
   format), so a published release never has to be downloaded again.
 - `site/`: a static site without a build step. `site/data/` is assembled from the dataset, and every comparison is
   computed in the browser.

@@ -168,7 +168,7 @@ public final class Dataset {
 
     /// Opens the dataset in a folder; a folder without `releases.jsonl` (or no folder) is an empty dataset.
     ///
-    /// @throws IOException when `README.txt` names another format, `releases.jsonl` cannot be read, or the folder has
+    /// @throws IOException when `README.md` names another format, `releases.jsonl` cannot be read, or the folder has
     ///                     [DatasetFormat#WRITE_MARKER] (a write was interrupted, so the files may not belong together)
     public static Dataset open(Path dir) throws IOException {
         Path marker = dir.resolve(DatasetFormat.WRITE_MARKER);
@@ -390,7 +390,7 @@ public final class Dataset {
         return List.copyOf(releases.values());
     }
 
-    /// Fails when `README.txt` names another format; a missing README is accepted (verify reports it).
+    /// Fails when `README.md` names another format; a missing README is accepted (verify reports it).
     private void checkFormat() throws IOException {
         String readme = files.read(DatasetFormat.README);
         if (readme == null) {
