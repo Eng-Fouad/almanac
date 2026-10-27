@@ -11,7 +11,8 @@ public enum ExtensionCatalog {
     PLATFORM_DESCRIPTOR("quarkus-bom-quarkus-platform-descriptor", true),
 
     /// `io.quarkus:quarkus-bom-descriptor-json:<v>` (type `json`, no classifier), published from 0.26.0 to 1.9.2.Final:
-    /// each extension has `group-id`, `artifact-id` and `version`.
+    /// each extension has `group-id`, `artifact-id` and `version`; in 0.26, `groupId`, `artifactId` and `version`,
+    /// and no `metadata` (its `guide` sits next to `name`).
     BOM_DESCRIPTOR_JSON("quarkus-bom-descriptor-json", false);
 
     /// Group of both catalog artifacts.

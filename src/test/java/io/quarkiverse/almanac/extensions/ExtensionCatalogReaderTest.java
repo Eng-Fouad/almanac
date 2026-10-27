@@ -12,8 +12,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// [ExtensionCatalogReader] on catalogs shaped like the published ones: the registry catalog of 1.10 and later and
-/// the descriptor of 0.26 to 1.9.
+/// [ExtensionCatalogReader] on catalogs shaped like the published ones (the registry catalog of 1.10 and later, the
+/// descriptor of 0.27 to 1.9 and its 0.26 layout) and on malformed documents.
 class ExtensionCatalogReaderTest {
 
     /// The layout of `quarkus-bom-quarkus-platform-descriptor-2.16.12.Final-2.16.12.Final.json`, shortened.
@@ -94,6 +94,41 @@ class ExtensionCatalogReaderTest {
             }
             """;
 
+    /// The layout of `quarkus-bom-descriptor-json-0.26.1.json`, shortened: camel-case coordinates, no `metadata`, the
+    /// guide next to the name.
+    private static final String DESCRIPTOR_JSON_026 = """
+            {
+                "bom": { "groupId": "io.quarkus", "artifactId": "quarkus-bom", "version": "0.26.1" },
+                "extensions": [
+                    {
+                        "name": "Quarkus - Core",
+                        "labels": [ ],
+                        "groupId": "io.quarkus",
+                        "artifactId": "quarkus-core",
+                        "version": "0.26.1",
+                        "description": "Build parent to bring in required dependencies"
+                    },
+                    {
+                        "name": "ArC",
+                        "shortName": "CDI",
+                        "labels": [ "arc", "cdi", "dependency-injection", "di" ],
+                        "guide": "https://quarkus.io/guides/cdi-reference",
+                        "groupId": "io.quarkus",
+                        "artifactId": "quarkus-arc",
+                        "version": "0.26.1",
+                        "description": "Build time CDI dependency injection"
+                    },
+                    {
+                        "groupId": "io.quarkus",
+                        "artifactId": "quarkus-caffeine",
+                        "version": "0.26.1",
+                        "name": "Quarkus - Caffeine - Runtime",
+                        "description": "A high performance caching library for Java 8+"
+                    }
+                ]
+            }
+            """;
+
     @Test
     void readsTheRegistryCatalog() throws IOException {
         ExtensionsSnapshot snapshot = ExtensionCatalogReader.read("2.16.12.Final", bytes(REGISTRY_CATALOG));
@@ -118,6 +153,20 @@ class ExtensionCatalogReaderTest {
                         "https://quarkus.io/guides/datasource", false, List.of(), null),
                 new ExtensionInfo("quarkus-core", "Quarkus - Core", "Quarkus core components", null, List.of(), null,
                         false, List.of(), null)), snapshot.extensions());
+    }
+
+    @Test
+    void readsTheDescriptorOf026WhoseEntriesHaveNoMetadata() throws IOException {
+        ExtensionsSnapshot snapshot = ExtensionCatalogReader.read("0.26.1", bytes(DESCRIPTOR_JSON_026));
+        assertEquals(List.of(
+                new ExtensionInfo("quarkus-arc", "ArC", "Build time CDI dependency injection", null, List.of(),
+                        "https://quarkus.io/guides/cdi-reference", false, List.of(), null),
+                new ExtensionInfo("quarkus-caffeine", "Quarkus - Caffeine - Runtime",
+                        "A high performance caching library for Java 8+", null, List.of(), null, false, List.of(),
+                        null),
+                new ExtensionInfo("quarkus-core", "Quarkus - Core", "Build parent to bring in required dependencies",
+                        null, List.of(), null, false, List.of(), null)), snapshot.extensions(),
+                "labels are keywords, not categories; 0.26 has no status");
     }
 
     @Test
@@ -156,6 +205,30 @@ class ExtensionCatalogReaderTest {
                                 {"artifact": "io.quarkus:quarkus-arc::jar:3.0.0"}]}
                 """)));
         assertEquals("the catalog lists quarkus-arc twice", twice.getMessage());
+    }
+
+    @Test
+    void refusesMalformedDocuments() {
+        String arc = "{\"extensions\": [{\"artifact\": \"io.quarkus:quarkus-arc::jar:3.0.0\"}]}";
+        for (String document : List.of("", "  \n", "null", "\"extensions\"", "<html><body>503</body></html>",
+                arc.substring(0, arc.length() - 3), arc + " {\"extensions\": []}", "{\"extensions\": null}")) {
+            assertThrows(IOException.class, () -> ExtensionCatalogReader.read("3.0.0", bytes(document)), document);
+        }
+        for (String entry : List.of("null", "\"io.quarkus:quarkus-arc\"", "{\"artifact\": \"io.quarkus\"}",
+                "{\"artifact\": \":quarkus-arc::jar:3.0.0\"}", "{\"artifact\": {\"groupId\": \"io.quarkus\"}}",
+                "{\"group-id\": \"io.quarkus\", \"artifactId\": \"quarkus-arc\"}")) {
+            assertThrows(IOException.class, () -> ExtensionCatalogReader.read("3.0.0",
+                    bytes("{\"extensions\": [" + entry + "]}")), entry);
+        }
+    }
+
+    @Test
+    void aCatalogWithoutQuarkusExtensionsReadsAsEmpty() throws IOException {
+        // ExtensionCatalogs refuses to write such a snapshot
+        assertEquals(List.of(), ExtensionCatalogReader.read("3.0.0", bytes("{\"extensions\": []}")).extensions());
+        assertEquals(List.of(), ExtensionCatalogReader.read("3.0.0",
+                bytes("{\"extensions\": [{\"artifact\": \"io.quarkiverse.acme:quarkus-acme::jar:1.0\"}]}"))
+                .extensions());
     }
 
     private static byte[] bytes(String text) {
