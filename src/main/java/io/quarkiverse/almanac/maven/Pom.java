@@ -7,11 +7,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 /// What [BomResolver] reads from one pom, exactly as written: no inheritance, no interpolation, no import.
 ///
@@ -22,7 +20,7 @@ import java.util.Set;
 /// @param parent     the `<parent>` coordinates, null when there is none
 /// @param properties the `<properties>` in document order (a name written twice keeps its last value, as in Maven)
 /// @param managed    the `<dependencyManagement>` dependencies in document order
-/// @param profiles   the profiles that declare properties or managed dependencies
+/// @param profiles   the `<profiles>` in document order
 record Pom(String groupId, String artifactId, String version, String packaging, Coordinates parent,
            Map<String, String> properties, List<Dependency> managed, List<Profile> profiles) {
 
@@ -42,9 +40,21 @@ record Pom(String groupId, String artifactId, String version, String packaging, 
 
     /// A profile, reduced to what could change managed versions.
     ///
-    /// @param properties the names of the properties it sets
-    /// @param managed    how many dependencies its `<dependencyManagement>` declares
-    record Profile(String id, boolean activeByDefault, Set<String> properties, int managed) {
+    /// @param activation null when the profile has no `<activation>` (only `-P` activates it then)
+    /// @param properties its `<properties>` in document order
+    /// @param managed    its `<dependencyManagement>` dependencies in document order
+    record Profile(String id, Activation activation, Map<String, String> properties, List<Dependency> managed) {
+    }
+
+    /// A profile's `<activation>`.
+    ///
+    /// @param jdk           the `<jdk>` range, null when absent
+    /// @param os            whether there is an `<os>` condition
+    /// @param propertyName  the `<property><name>`, `!` included, null when absent
+    /// @param propertyValue the `<property><value>`, `!` included, null when absent
+    /// @param file          whether there is a `<file>` condition
+    record Activation(boolean activeByDefault, String jdk, boolean os, String propertyName, String propertyValue,
+                      boolean file) {
     }
 
     /// Reads a pom.
@@ -61,15 +71,16 @@ record Pom(String groupId, String artifactId, String version, String packaging, 
                 .orElse(null);
         List<Profile> profiles = new ArrayList<>();
         for (Element profile : Xml.path(project, "profiles").map(p -> Xml.children(p, "profile")).orElse(List.of())) {
-            Set<String> properties = properties(profile).keySet();
-            int managed = managed(profile).size();
-            if (!properties.isEmpty() || managed > 0) {
-                boolean activeByDefault = Xml.path(profile, "activation", "activeByDefault")
-                        .map(element -> element.getTextContent().strip().equals("true"))
-                        .orElse(false);
-                profiles.add(new Profile(Optional.ofNullable(text(profile, "id")).orElse("default"), activeByDefault,
-                        Collections.unmodifiableSet(new LinkedHashSet<>(properties)), managed));
-            }
+            Activation activation = Xml.path(profile, "activation")
+                    .map(element -> new Activation(
+                            Xml.childText(element, "activeByDefault").filter("true"::equalsIgnoreCase).isPresent(),
+                            text(element, "jdk"), Xml.path(element, "os").isPresent(),
+                            Xml.path(element, "property").map(property -> text(property, "name")).orElse(null),
+                            Xml.path(element, "property").map(property -> text(property, "value")).orElse(null),
+                            Xml.path(element, "file").isPresent()))
+                    .orElse(null);
+            profiles.add(new Profile(Optional.ofNullable(text(profile, "id")).orElse("default"), activation,
+                    Collections.unmodifiableMap(properties(profile)), managed(profile)));
         }
         return new Pom(text(project, "groupId"), text(project, "artifactId"), text(project, "version"),
                 text(project, "packaging"), parent, Collections.unmodifiableMap(properties(project)),

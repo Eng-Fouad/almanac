@@ -157,6 +157,7 @@ public final class BomCommand implements Callable<Integer> {
                 result.poms(), result.parents().size(), result.imports().size(), result.imported(),
                 snapshot.deps().size(), differences.isEmpty() ? "equal" : "differences: " + differences.size());
         differences.forEach(line -> out.println("  " + line));
+        result.profiles().forEach(profile -> out.println("  profile applied: " + profile));
         for (BomResolver.Entry entry : result.unresolved()) {
             out.println("  unresolved in the pom: " + entry.id() + " " + entry.version() + describe(entry));
         }

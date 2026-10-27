@@ -413,7 +413,8 @@ class BomResolverTest {
                 + "io.quarkus:quarkus-bom:2.4.1.Final): io.netty:netty-tcnative, io.netty:netty-tcnative:linux-aarch_64, "
                 + "io.netty:netty-tcnative:linux-x86_64 and 2 more; ${unknown.group} (declared in "
                 + "io.quarkus:quarkus-bom:2.4.1.Final): ${unknown.group}:art; neither the poms that declare them nor "
-                + "their parents define these properties (profiles are ignored)", e.getMessage());
+                + "their parents define these properties (profiles that depend on the machine are not applied)",
+                e.getMessage());
     }
 
     @Test
@@ -450,38 +451,94 @@ class BomResolverTest {
         assertEquals("the parent g:gone:1 of g:bom:1 is not in the repository", missingParent.getMessage());
     }
 
+    /// A `<profile>` with the given activation (empty for none) and other elements.
+    private static String profile(String id, String activation, String... elements) {
+        return "<profile><id>" + id + "</id>" + (activation.isEmpty() ? "" : "<activation>" + activation
+                + "</activation>") + String.join("", elements) + "</profile>";
+    }
+
     @Test
-    void ignoresProfilesButSaysWhenTheyWouldMatter() throws IOException {
+    void appliesTheProfilesThatAPlainBuildActivatesOnEveryMachine() throws IOException {
         String bom = project("g:bom:1",
-                properties("a.version=1"),
-                managed(dep("g:a:${a.version}"), dep("g:b:${b.version}")),
-                """
-                <profiles>
-                  <profile>
-                    <id>jdk11</id>
-                    <activation><activeByDefault>true</activeByDefault></activation>
-                    <properties><a.version>11</a.version><unused.version>3</unused.version></properties>
-                  </profile>
-                  <profile>
-                    <id>extra</id>
-                    <properties><b.version>2</b.version></properties>
-                    <dependencyManagement><dependencies><dependency>
-                      <groupId>g</groupId><artifactId>c</artifactId><version>1</version>
-                    </dependency></dependencies></dependencyManagement>
-                  </profile>
-                  <profile><id>quiet</id><properties><other>1</other></properties></profile>
-                </profiles>
-                """);
+                properties("x.version=1", "y.version=1"),
+                managed(dep("g:x:${x.version}"), dep("g:y:${y.version}"), dep("g:replaced:1")),
+                "<profiles>"
+                        + profile("without-skip", "<property><name>!skip.extra</name></property>",
+                                properties("x.version=2"), managed(dep("g:extra:1"), dep("g:replaced:2")))
+                        + profile("with-enable", "<property><name>enable</name></property>",
+                                managed(dep("g:never:1")))
+                        + profile("not-fast", "<property><name>mode</name><value>!fast</value></property>",
+                                managed(dep("g:mode:1")))
+                        + profile("fast", "<property><name>mode</name><value>fast</value></property>",
+                                managed(dep("g:fast:1")))
+                        + profile("default", "<activeByDefault>true</activeByDefault>", properties("y.version=2"))
+                        + profile("manual", "", managed(dep("g:manual:1")))
+                        + profile("jdk11", "<jdk>[11,)</jdk>", managed(dep("g:jdk:1")), properties("y.version=11"))
+                        + profile("java-vendor", "<property><name>!java.vendor</name></property>",
+                                managed(dep("g:vendor:1")))
+                        + "</profiles>");
 
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE, bom);
 
-        assertEquals(Map.of("g:a", "1", "g:b", "${b.version}"), versions(result));
+        assertEquals(Map.of("g:x", "2", "g:y", "1", "g:replaced", "2", "g:extra", "1", "g:mode", "1"),
+                versions(result));
+        assertEquals(List.of("without-skip of g:bom:1", "not-fast of g:bom:1"), result.profiles());
         assertEquals(List.of(
-                "profiles are ignored: profile jdk11 of g:bom:1 (active by default) sets the property a.version, "
-                        + "which the managed dependencies of g:bom:1 use",
-                "profiles are ignored: profile extra of g:bom:1 manages 1 dependency",
-                "profiles are ignored: profile extra of g:bom:1 sets the property b.version, which the managed "
-                        + "dependencies of g:bom:1 use"), result.warnings());
+                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) manages 1 "
+                        + "dependency",
+                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) sets the "
+                        + "property y.version, which the managed dependencies of g:bom:1 use",
+                "profiles that depend on the machine are not applied: profile java-vendor of g:bom:1 (property "
+                        + "!java.vendor) manages 1 dependency"), result.warnings());
+    }
+
+    @Test
+    void activeByDefaultProfilesApplyWhenNoOtherProfileOfThePomIsActive() throws IOException {
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1",
+                properties("a.version=1"),
+                "<profiles>" + profile("default", "<activeByDefault>true</activeByDefault>", properties("a.version=2"),
+                        managed(dep("g:from-parent-profile:1"))) + profile("other", "<property><name>other</name>"
+                        + "</property>", properties("a.version=3")) + "</profiles>"));
+        String bom = project(":bom:", parent("g:parent:1"), managed(dep("g:a:${a.version}")));
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals(Map.of("g:a", "2", "g:from-parent-profile", "1"), versions(result));
+        assertEquals(List.of("default of g:parent:1"), result.profiles());
+    }
+
+    @Test
+    void aProfileOfAnImportedBomsParentCanImportAnotherBom() throws IOException {
+        // shaped like resteasy-bom 4.0.0.Beta8, whose parent imports resteasy-dependencies unless
+        // -Dresteasy.dependencies.eap is given
+        Repo repo = new Repo()
+                .add("org.jboss.resteasy:resteasy-jaxrs-all:4.0.0.Beta8", project(
+                        "org.jboss.resteasy:resteasy-jaxrs-all:4.0.0.Beta8",
+                        "<profiles>"
+                                + profile("resteasy-default", "<property><name>!resteasy.dependencies.eap</name>"
+                                + "</property>", managed(bomImport("org.jboss.resteasy:resteasy-dependencies:"
+                                + "${project.version}")))
+                                + profile("resteasy-dependencies-eap", "<property><name>resteasy.dependencies.eap"
+                                + "</name></property>", managed(bomImport("org.jboss.resteasy:eap:1")))
+                                + "</profiles>"))
+                .add("org.jboss.resteasy:resteasy-bom:4.0.0.Beta8", project(":resteasy-bom:",
+                        parent("org.jboss.resteasy:resteasy-jaxrs-all:4.0.0.Beta8"),
+                        managed(dep("org.jboss.resteasy:resteasy-core:${project.version}"))))
+                .add("org.jboss.resteasy:resteasy-dependencies:4.0.0.Beta8", project(
+                        "org.jboss.resteasy:resteasy-dependencies:4.0.0.Beta8",
+                        managed(dep("org.jboss.resteasy:resteasy-core:0-loses"), dep("com.google.inject:guice:4.2"))));
+        String bom = project("io.quarkus:quarkus-bom:0.11.0",
+                managed(bomImport("org.jboss.resteasy:resteasy-bom:4.0.0.Beta8")));
+
+        BomResolver.Result result = resolve(repo, bom);
+
+        assertEquals(Map.of("org.jboss.resteasy:resteasy-core", "4.0.0.Beta8", "com.google.inject:guice", "4.2"),
+                versions(result));
+        assertEquals(List.of("org.jboss.resteasy:resteasy-bom:4.0.0.Beta8",
+                "org.jboss.resteasy:resteasy-dependencies:4.0.0.Beta8"), result.imports());
+        assertEquals(List.of("resteasy-default of org.jboss.resteasy:resteasy-jaxrs-all:4.0.0.Beta8"),
+                result.profiles());
+        assertEquals(0, repo.reads("org.jboss.resteasy:eap:1"));
     }
 
     @Test
