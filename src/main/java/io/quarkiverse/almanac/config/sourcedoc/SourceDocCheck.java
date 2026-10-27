@@ -82,7 +82,7 @@ public final class SourceDocCheck implements Callable<Integer> {
 
     @Option(names = "--pause", defaultValue = "2-5", paramLabel = "SECONDS",
             description = "Random pause between two requests to the repository, in seconds: 2-5, 3, or 0 for none; "
-                    + "Maven Central needs at least 1 (default: ${DEFAULT-VALUE}).")
+                    + "Maven Central needs at least 2 (default: ${DEFAULT-VALUE}).")
     String pause;
 
     @Option(names = "--offline", description = "Use cached files only; fail when something is not cached.")

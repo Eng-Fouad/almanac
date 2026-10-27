@@ -56,8 +56,8 @@ public final class Http implements AutoCloseable {
 
     public static final String USER_AGENT = "quarkus-almanac/0.1 (unofficial Quarkus release almanac)";
 
-    /// The shortest pause between two requests to Maven Central.
-    public static final Duration CENTRAL_MIN_PAUSE = Duration.ofSeconds(1);
+    /// The shortest pause between two requests to Maven Central: the shortest of the default pauses.
+    public static final Duration CENTRAL_MIN_PAUSE = Duration.ofSeconds(2);
 
     /// The hosts of Maven Central: its repository under both names, its search and its portal.
     private static final Set<String> CENTRAL_HOSTS = Set.of("repo1.maven.org", "repo.maven.apache.org",
