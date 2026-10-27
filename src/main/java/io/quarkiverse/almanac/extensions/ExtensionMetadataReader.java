@@ -58,6 +58,12 @@ public final class ExtensionMetadataReader {
         if (root == null || !root.isObject()) {
             throw new IOException("not a YAML mapping");
         }
+        return parse(artifactId, root);
+    }
+
+    /// The entry of one extension from its descriptor: `name` and `description` at the top, the rest from `metadata`
+    /// (the layout of `quarkus-extension.yaml` and of each extension in an extension catalog).
+    static ExtensionInfo parse(String artifactId, JsonNode root) {
         JsonNode metadata = root.path("metadata");
         JsonNode status = metadata.path("status");
         String firstStatus = text(status.isArray() ? status.path(0) : status);

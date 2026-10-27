@@ -111,6 +111,62 @@ public final class MavenRepo {
         return Optional.of(new Download(response.body(), lastModified));
     }
 
+    /// Repository path of an artifact file with a classifier, e.g.
+    /// `io/quarkus/quarkus-core/3.8.6.1/quarkus-core-3.8.6.1-sources.jar`; without a classifier (null or empty) the
+    /// path of [#artifactPath(String, String, String, String)].
+    public static String artifactPath(String groupId, String artifactId, String version, String classifier,
+            String extension) {
+        if (classifier == null || classifier.isEmpty()) {
+            return artifactPath(groupId, artifactId, version, extension);
+        }
+        return groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/"
+                + artifactId + "-" + version + "-" + classifier + "." + extension;
+    }
+
+    /// An artifact file with a classifier, such as the extension catalog
+    /// `io.quarkus:quarkus-bom-quarkus-platform-descriptor:3.20.6:json:3.20.6` (classifier `3.20.6`, extension
+    /// `json`), cached like [#artifact(String, String, String, String)]; empty when the repository answers 404. Without
+    /// a classifier (null or empty) it is that method.
+    public Optional<Download> artifact(String groupId, String artifactId, String version, String classifier,
+            String extension) throws IOException {
+        if (classifier == null || classifier.isEmpty()) {
+            return artifact(groupId, artifactId, version, extension);
+        }
+        return download(artifactPath(groupId, artifactId, version, classifier, extension));
+    }
+
+    /// The artifact file at a repository path: from the cache, else downloaded and cached with its `Last-Modified`
+    /// time (a 404 as a `.404` marker, read as empty).
+    private Optional<Download> download(String path) throws IOException {
+        Path file = cacheRoot.resolve(path);
+        Path missing = sibling(file, ".404");
+        Path lastModifiedFile = sibling(file, ".last-modified");
+        if (Files.exists(missing)) {
+            return Optional.empty();
+        }
+        if (Files.exists(file)) {
+            Instant lastModified = Files.exists(lastModifiedFile)
+                    ? Instant.parse(Files.readString(lastModifiedFile).strip())
+                    : null;
+            return Optional.of(new Download(Files.readAllBytes(file), lastModified));
+        }
+        URI uri = base.resolve(path);
+        Http.Response response = http.get(uri);
+        if (response.status() == 404) {
+            AtomicFiles.write(missing, new byte[0]);
+            return Optional.empty();
+        }
+        if (response.status() != 200) {
+            throw new IOException("HTTP " + response.status() + " for " + uri);
+        }
+        Instant lastModified = response.header("Last-Modified").flatMap(MavenRepo::parseHttpDate).orElse(null);
+        if (lastModified != null) {
+            AtomicFiles.writeString(lastModifiedFile, lastModified + "\n");
+        }
+        AtomicFiles.write(file, response.body());
+        return Optional.of(new Download(response.body(), lastModified));
+    }
+
     /// A jar of this repository, indexed lazily (no request is made until it is used).
     public RemoteJar jar(String groupId, String artifactId, String version) {
         String path = artifactPath(groupId, artifactId, version, "jar");

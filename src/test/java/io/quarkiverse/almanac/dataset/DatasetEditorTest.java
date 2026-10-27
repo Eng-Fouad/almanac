@@ -85,7 +85,7 @@ class DatasetEditorTest {
     }
 
     @Test
-    void refusesUnvalidatedExtractorsAndTheirExtensions() throws Exception {
+    void refusesUnvalidatedExtractorsButKeepsTheirExtensions() throws Exception {
         try (ScratchDir dir = ScratchDir.create()) {
             SnapshotStore work = work(dir);
             ConfigSnapshot bytecode = new ConfigSnapshot("3.1.0", "bytecode", "bytecode/1", 3, List.of(),
@@ -95,13 +95,12 @@ class DatasetEditorTest {
             DatasetEditor.ImportReport report = editor.importSnapshots(all(work), false);
 
             String why = "extractor bytecode/1 is not validated; its snapshots stay out of the dataset and the site";
-            assertEquals(Map.of("config 3.1.0", why, "extensions 3.1.0", "its config snapshot is refused (" + why + ")"),
-                    reasons(report));
+            assertEquals(Map.of("config 3.1.0", why), reasons(report));
             assertTrue(report.refusals().stream().allMatch(DatasetEditor.Refusal::unvalidated));
             assertFalse(report.hasInconsistencies());
             assertTrue(editor.has("3.1.0", Kind.BOM));
             assertFalse(editor.has("3.1.0", Kind.CONFIG));
-            assertFalse(editor.has("3.1.0", Kind.EXTENSIONS));
+            assertTrue(editor.has("3.1.0", Kind.EXTENSIONS), "extensions need no config");
         }
     }
 
@@ -123,7 +122,7 @@ class DatasetEditorTest {
                         + warning.substring(0, 40)), why);
                 assertTrue(report.refusals().stream().allMatch(DatasetEditor.Refusal::unvalidated));
                 assertFalse(editor.has("3.1.0", Kind.CONFIG));
-                assertFalse(editor.has("3.1.0", Kind.EXTENSIONS));
+                assertTrue(editor.has("3.1.0", Kind.EXTENSIONS));
             }
         }
     }
@@ -144,25 +143,68 @@ class DatasetEditorTest {
     }
 
     @Test
-    void configAndExtensionsGoTogether() throws Exception {
+    void configNeedsItsExtensionsButExtensionsNeedNoConfig() throws Exception {
         try (ScratchDir dir = ScratchDir.create()) {
             SnapshotStore work = work(dir);
             DatasetEditor editor = DatasetEditor.open(dir.resolve("dataset"));
             DatasetEditor.ImportReport report = editor.importSnapshots(List.of(
                     candidate(work, "3.1.0", Kind.BOM), candidate(work, "3.1.0", Kind.CONFIG),
                     candidate(work, "3.2.0", Kind.BOM), candidate(work, "3.2.0", Kind.EXTENSIONS)), false);
-            assertEquals(Map.of(
-                    "config 3.1.0", "config and extensions go together, and the extensions snapshot is neither in the "
-                            + "dataset nor in this import",
-                    "extensions 3.2.0", "config and extensions go together, and the config snapshot is neither in the "
-                            + "dataset nor in this import"), reasons(report));
-            assertEquals(List.of("bom 3.1.0", "bom 3.2.0"), report.added());
+            assertEquals(Map.of("config 3.1.0", "config needs the release's extensions snapshot, which is neither in "
+                    + "the dataset nor in this import"), reasons(report));
+            assertEquals(List.of("bom 3.1.0", "bom 3.2.0", "extensions 3.2.0"), report.added());
+
+            // the extensions the dataset has are enough for the config of a later import
+            DatasetEditor.ImportReport later = editor.importSnapshots(List.of(candidate(work, "3.2.0", Kind.CONFIG)),
+                    false);
+            assertEquals(List.of("config 3.2.0"), later.added());
+
+            // config whose extensions are refused is refused with them
+            work.write("3.1.0", SnapshotStore.EXTENSIONS, Samples.extensions("3.1.1", Samples.RESTEASY_REACTIVE));
+            DatasetEditor.ImportReport refused = editor.importSnapshots(List.of(
+                    candidate(work, "3.1.0", Kind.CONFIG), candidate(work, "3.1.0", Kind.EXTENSIONS)), false);
+            String inconsistent = "inconsistent: its version is 3.1.1, not 3.1.0";
+            assertEquals(Map.of("config 3.1.0", "its extensions snapshot is refused (" + inconsistent + ")",
+                    "extensions 3.1.0", inconsistent), reasons(refused));
+
+            // extensions need the release's BOM, like config
+            work.write("3.0.0.Final", SnapshotStore.EXTENSIONS, Samples.extensions("3.0.0.Final", Samples.REST));
+            DatasetEditor.ImportReport noBom = DatasetEditor.open(dir.resolve("other"))
+                    .importSnapshots(List.of(candidate(work, "3.0.0.Final", Kind.EXTENSIONS)), false);
+            assertEquals(Map.of("extensions 3.0.0.Final", "config and extensions need the release's BOM snapshot, "
+                    + "which is neither in the dataset nor in this import"), reasons(noBom));
 
             // a missing work file is refused too
             DatasetEditor.ImportReport missing = editor.importSnapshots(List.of(
                     candidate(work, "3.0.0.Final", Kind.CONFIG)), false);
             assertTrue(missing.refusals().getFirst().reason().startsWith("no work snapshot "),
                     missing.refusals().toString());
+        }
+    }
+
+    @Test
+    void removingExtensionsTakesTheConfigAlongButNotTheReverse() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            SnapshotStore work = work(dir);
+            Path datasetDir = dir.resolve("dataset");
+            DatasetEditor editor = DatasetEditor.open(datasetDir);
+            editor.importSnapshots(all(work), false);
+            editor.write();
+
+            DatasetEditor removing = DatasetEditor.open(datasetDir);
+            assertEquals(List.of("config 3.1.0"), removing.remove(List.of("3.1.0"), Set.of(Kind.CONFIG)));
+            assertEquals(List.of("config 3.2.0", "extensions 3.2.0"),
+                    removing.remove(List.of("3.2.0"), Set.of(Kind.EXTENSIONS)));
+            removing.write();
+
+            // 3.1.0 keeps its extensions without config: written, restored and verified like any release
+            Dataset dataset = Dataset.open(datasetDir);
+            assertEquals(Samples.EXTENSIONS_310, dataset.extensions("3.1.0"));
+            assertFalse(dataset.has("3.1.0", Kind.CONFIG));
+            assertEquals(List.of("3.1.0"), dataset.versionsWith(Kind.EXTENSIONS));
+            assertTrue(Files.readString(datasetDir.resolve(DatasetFormat.RELEASES)).contains(
+                    "{\"version\":\"3.1.0\",\"date\":\"2023-05-31\",\"bom\":true,\"extensions\":true}\n"));
+            assertEquals(List.of(), DatasetVerifier.verify(datasetDir, null).problems());
         }
     }
 
