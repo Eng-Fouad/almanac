@@ -4,6 +4,7 @@ import io.quarkiverse.almanac.model.ManagedDep;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -12,12 +13,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -769,5 +773,51 @@ class BomResolverTest {
         }
         assertEquals(1, repo.reads("g:parent:1"));
         assertEquals(1, repo.reads("org.imp:bom:1"));
+    }
+
+    @Test
+    void aThreadWaitingForAPomGetsTheFailureOfItsFetchAsItWasThrown() throws Exception {
+        // the fetch of the shared parent fails as a request does once requests stopped, while a second resolution
+        // waits for it
+        Http.StoppedException stopped = new Http.StoppedException("not requesting g:parent:1: requests stopped");
+        CountDownLatch fetching = new CountDownLatch(1);
+        CountDownLatch fail = new CountDownLatch(1);
+        AtomicInteger reads = new AtomicInteger();
+        BomResolver resolver = new BomResolver((groupId, artifactId, version) -> {
+            reads.incrementAndGet();
+            fetching.countDown();
+            try {
+                fail.await();
+            } catch (InterruptedException e) {
+                throw new InterruptedIOException("interrupted");
+            }
+            throw stopped;
+        });
+        byte[] first = project("g:bom-a:1", parent("g:parent:1")).getBytes(StandardCharsets.UTF_8);
+        byte[] second = project("g:bom-b:1", parent("g:parent:1")).getBytes(StandardCharsets.UTF_8);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            try {
+                Future<BomResolver.Result> fetches = executor.submit(() -> resolver.resolve(first, "1"));
+                fetching.await();
+                AtomicReference<Thread> waiter = new AtomicReference<>();
+                Future<BomResolver.Result> waits = executor.submit(() -> {
+                    waiter.set(Thread.currentThread());
+                    return resolver.resolve(second, "1");
+                });
+                long deadline = System.nanoTime() + 10_000_000_000L;
+                while (waiter.get() == null || waiter.get().getState() != Thread.State.WAITING) {
+                    assertTrue(System.nanoTime() < deadline, "the second resolution never waited for the fetch");
+                    Thread.sleep(5);
+                }
+                fail.countDown();
+
+                assertSame(stopped, assertThrows(ExecutionException.class, fetches::get).getCause());
+                assertSame(stopped, assertThrows(ExecutionException.class, waits::get).getCause(),
+                        "the waiting resolution fails with the failure of the fetch, a stop of the requests");
+            } finally {
+                fail.countDown();
+            }
+        }
+        assertEquals(1, reads.get());
     }
 }

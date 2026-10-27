@@ -532,6 +532,8 @@ public final class BomResolver {
         }
     }
 
+    /// The outcome of the fetch of another thread; its failure as it was thrown, so that a stop of the requests
+    /// ([Http.StoppedException]) stays one.
     private static <T> T await(CompletableFuture<T> future, String id) throws IOException {
         try {
             return future.get();
@@ -539,6 +541,9 @@ public final class BomResolver {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("interrupted while waiting for the pom " + id);
         } catch (ExecutionException e) {
+            if (e.getCause() instanceof IOException cause) {
+                throw cause;
+            }
             throw new IOException(e.getCause().getMessage(), e.getCause());
         }
     }
