@@ -59,8 +59,9 @@ public final class Http implements AutoCloseable {
     /// The shortest pause between two requests to Maven Central.
     public static final Duration CENTRAL_MIN_PAUSE = Duration.ofSeconds(1);
 
-    /// The hosts of Maven Central.
-    private static final Set<String> CENTRAL_HOSTS = Set.of("repo1.maven.org", "repo.maven.apache.org");
+    /// The hosts of Maven Central: its repository under both names, its search and its portal.
+    private static final Set<String> CENTRAL_HOSTS = Set.of("repo1.maven.org", "repo.maven.apache.org",
+            "search.maven.org", "central.sonatype.com");
     private static final int MAX_ATTEMPTS = 6;
     /// 429 answers in a row that stop the requests.
     static final int MAX_TOO_MANY_REQUESTS = 3;
@@ -160,10 +161,16 @@ public final class Http implements AutoCloseable {
                 .build();
     }
 
-    /// Whether a URI points to Maven Central (`repo1.maven.org`, `repo.maven.apache.org`).
+    /// Whether a URI points to Maven Central (`repo1.maven.org`, `repo.maven.apache.org`, `search.maven.org`,
+    /// `central.sonatype.com`), in any case and also as a fully qualified name with its final dot
+    /// (`repo1.maven.org.`).
     public static boolean isMavenCentral(URI uri) {
         String host = uri.getHost();
-        return host != null && CENTRAL_HOSTS.contains(host.toLowerCase(Locale.ROOT));
+        if (host == null) {
+            return false;
+        }
+        String name = host.toLowerCase(Locale.ROOT);
+        return CENTRAL_HOSTS.contains(name.endsWith(".") ? name.substring(0, name.length() - 1) : name);
     }
 
     /// Refuses a pause too short for Maven Central, whose requests need at least [#CENTRAL_MIN_PAUSE] between them;

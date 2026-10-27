@@ -515,6 +515,12 @@ class HttpTest {
                 () -> Http.checkPause(Pacer.Pause.NONE, URI.create("https://REPO.maven.apache.org/maven2/")));
         Http.checkPause(Pacer.Pause.NONE, URI.create("https://maven.example.org/releases/"));
         assertTrue(Http.isMavenCentral(URI.create("https://repo1.maven.org:443/maven2/")));
+        // the fully qualified name, with its final dot, is the same host
+        assertTrue(Http.isMavenCentral(URI.create("https://repo1.maven.org./maven2/")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Http.checkPause(Pacer.Pause.NONE, URI.create("https://repo1.maven.org./maven2/")));
+        assertTrue(Http.isMavenCentral(URI.create("https://search.maven.org/solrsearch/select")));
+        assertTrue(Http.isMavenCentral(URI.create("https://central.sonatype.com/artifact/io.quarkus/quarkus-bom")));
         assertFalse(Http.isMavenCentral(URI.create("https://repo1.maven.org.example.com/maven2/")));
         assertFalse(Http.isMavenCentral(uri("/maven2/")));
 
