@@ -5,6 +5,7 @@ import io.quarkiverse.almanac.util.Log;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.io.RandomAccessFile;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -14,7 +15,6 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -256,9 +256,9 @@ public final class Pacer {
             if (current.lockFile() == null) {
                 return paced(ready, request, current, null);
             }
-            try (FileChannel channel = open(current.lockFile())) {
-                lock(channel, current.lockFile()); // released when the channel closes
-                return paced(ready, request, current, channel);
+            try (RandomAccessFile file = open(current.lockFile())) {
+                lock(file.getChannel(), current.lockFile()); // released when the file closes
+                return paced(ready, request, current, file);
             }
         } finally {
             current.turn().unlock();
@@ -281,23 +281,24 @@ public final class Pacer {
 
     /// In the turn: checks, waits for the earliest start, sends, and sets the next earliest start, also in the lock
     /// file when there is one.
-    private <T> T paced(Check ready, Request<T> request, Place current, FileChannel channel) throws IOException {
-        ready.check(channel == null ? null : readStop(current.stopFile()).orElse(null));
-        waitUntil(channel == null ? nextStart.get() : Math.max(nextStart.get(), readNextStart(channel, current)));
+    private <T> T paced(Check ready, Request<T> request, Place current, RandomAccessFile file) throws IOException {
+        ready.check(file == null ? null : readStop(current.stopFile()).orElse(null));
+        waitUntil(file == null ? nextStart.get()
+                : Math.max(nextStart.get(), readNextStart(file.getChannel(), current)));
         TurnState turn = new TurnState(current);
         T result;
         try {
             result = request.send(turn);
         } catch (Throwable failure) {
             try {
-                setNextStart(channel, current, turn);
+                setNextStart(file, current, turn);
             } catch (LockFileException e) {
                 e.addSuppressed(failure);
                 throw e;
             }
             throw failure;
         }
-        setNextStart(channel, current, turn);
+        setNextStart(file, current, turn);
         return result;
     }
 
@@ -318,24 +319,22 @@ public final class Pacer {
     }
 
     /// Sets the earliest start of the next request: a random pause after now, or the longer delay the request asked
-    /// for. The lock file gets it even when this thread was interrupted meanwhile (the interrupt would close the
-    /// channel before the write); the interrupt stays set.
-    private void setNextStart(FileChannel channel, Place current, TurnState turn) throws LockFileException {
+    /// for. The lock file gets it even when this thread is interrupted before or during the write: it goes through
+    /// the file, not its channel, whose operations an interrupt ends by closing the channel (and releasing the lock).
+    /// The new start replaces the old one before the file is cut to its length, so the file is never empty.
+    private void setNextStart(RandomAccessFile file, Place current, TurnState turn) throws LockFileException {
         long next = clock.getAsLong() + Math.max(randomPauseMillis(), turn.delayMillis);
         nextStart.set(next);
-        if (channel == null) {
+        if (file == null) {
             return;
         }
-        boolean interrupted = Thread.interrupted();
+        byte[] line = (next + "\n").getBytes(StandardCharsets.US_ASCII);
         try {
-            channel.truncate(0);
-            channel.write(ByteBuffer.wrap((next + "\n").getBytes(StandardCharsets.US_ASCII)), 0);
+            file.seek(0);
+            file.write(line);
+            file.setLength(line.length);
         } catch (IOException e) {
             throw new LockFileException("cannot write the next start to " + current.lockFile() + ": " + e, e);
-        } finally {
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
         }
     }
 
@@ -372,10 +371,10 @@ public final class Pacer {
         return current;
     }
 
-    private static FileChannel open(Path file) throws IOException {
+    /// Opens the lock file, creating it when missing.
+    private static RandomAccessFile open(Path file) throws IOException {
         try {
-            return FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ,
-                    StandardOpenOption.WRITE);
+            return new RandomAccessFile(file.toFile(), "rw");
         } catch (IOException e) {
             throw failure("cannot open " + file, e);
         }

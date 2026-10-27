@@ -20,8 +20,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.SplittableRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -393,6 +395,39 @@ class PacerTest {
                 Thread.interrupted();
             }
             assertEquals(time.now.get() + 4000, readAsBefore(lockFile), "the request's pause is in the lock file");
+        }
+    }
+
+    @Test
+    void interruptsWhileTheNextStartIsWrittenNeitherLoseItNorFailTheRequest() throws Exception {
+        try (ScratchDir dir = ScratchDir.create()) {
+            Path lockFile = dir.resolve(Pacer.LOCK_FILE);
+            FakeTime time = new FakeTime();
+            Pacer pacer = time.pacer(Pause.parse("4"), lockFile);
+            Thread caller = Thread.currentThread();
+            for (int i = 0; i < 20; i++) {
+                AtomicBoolean answered = new AtomicBoolean();
+                AtomicReference<Thread> interrupter = new AtomicReference<>();
+                try {
+                    // from the answer on, interrupts keep coming while the pacer writes the next start
+                    assertEquals("sent", pacer.run(turn -> {
+                        interrupter.set(Thread.ofPlatform().start(() -> {
+                            while (!answered.get()) {
+                                caller.interrupt();
+                            }
+                        }));
+                        return "sent";
+                    }));
+                } finally {
+                    answered.set(true);
+                    while (interrupter.get() != null && interrupter.get().isAlive()) {
+                        Thread.onSpinWait();
+                    }
+                    Thread.interrupted();
+                }
+                assertEquals(time.now.get() + 4000, readAsBefore(lockFile), "request " + i);
+                time.now.addAndGet(4000);
+            }
         }
     }
 
