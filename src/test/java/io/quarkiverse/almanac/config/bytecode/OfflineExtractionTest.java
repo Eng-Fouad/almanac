@@ -11,6 +11,7 @@ import io.quarkiverse.almanac.model.BomSnapshot;
 import io.quarkiverse.almanac.model.ConfigProperty;
 import io.quarkiverse.almanac.model.ConfigSnapshot;
 import io.quarkiverse.almanac.model.ManagedDep;
+import io.quarkiverse.almanac.util.AtomicFiles;
 import io.quarkiverse.almanac.util.SnapshotStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -29,15 +30,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -308,6 +313,101 @@ class OfflineExtractionTest {
             for (String file : List.of(SnapshotStore.CONFIG, SnapshotStore.EXTENSIONS)) {
                 assertFalse(store().exists(version, file), version + ": " + file + " written");
             }
+        }
+    }
+
+    /// Whatever request of a release is refused, by a 403 or by the stop marker of another command on the same
+    /// cache, no snapshot is written; a stop recorded after the last request takes nothing away.
+    @Test
+    void writesNothingWhicheverRequestOfTheReleaseIsRefused() throws IOException {
+        Map<String, byte[]> repository = new HashMap<>();
+        repository.put("io/quarkus/quarkus-acme/3.8.6/quarkus-acme-3.8.6.jar", zip(acmeJar()));
+        repository.put("io/quarkus/quarkus-acme/3.8.6/quarkus-acme-3.8.6-sources.jar",
+                zip(sourcesJar("io/quarkus/acme/AcmeConfig.java", ACME_SOURCE)));
+        repository.put("io/quarkus/quarkus-tls/3.8.6/quarkus-tls-3.8.6.jar",
+                zip(binaryJar(TLS, "io/quarkus/tls/TlsConfig")));
+        repository.put("io/vertx/vertx-core/4.5.1/vertx-core-4.5.1.jar",
+                zip(Map.of("io/vertx/core/http/ClientAuth.class", classes.get("io/vertx/core/http/ClientAuth"))));
+        BomSnapshot bom = new BomSnapshot("3.8.6", "2026-01-01", List.of(
+                new ManagedDep("io.quarkus:quarkus-acme", "3.8.6"), new ManagedDep("io.quarkus:quarkus-tls", "3.8.6"),
+                new ManagedDep("io.vertx:vertx-core", "4.5.1")));
+
+        Served all = extractServed(repository, bom, "all", 0, false);
+        assertNull(all.failure());
+        // the release needs every request: the sources jar for its doc annotations, the third-party jar for its enum
+        ConfigSnapshot snapshot = all.store().read("3.8.6", SnapshotStore.CONFIG, ConfigSnapshot.class);
+        assertEquals("depends on the database", property(snapshot, "quarkus.acme.dialect").defaultValue());
+        assertEquals(List.of("none", "request", "required"),
+                property(snapshot, "quarkus.tls.client-auth").enumValues());
+        assertTrue(all.requests() >= 4, all.requests() + " requests");
+
+        for (int refused = 1; refused <= all.requests(); refused++) {
+            Served refusal = extractServed(repository, bom, "refused-" + refused, refused, false);
+            assertNotNull(refusal.failure(), "request " + refused + " refused");
+            assertTrue(refusal.stopped(), "request " + refused + " refused");
+            Served marker = extractServed(repository, bom, "marker-" + refused, refused, true);
+            // the marker refuses the requests after the one that wrote it
+            boolean lastRequest = refused == all.requests();
+            assertEquals(lastRequest, marker.failure() == null, "marker after request " + refused + ": "
+                    + marker.failure());
+            for (String file : List.of(SnapshotStore.CONFIG, SnapshotStore.EXTENSIONS)) {
+                assertFalse(refusal.store().exists("3.8.6", file), "403 at request " + refused + ": " + file);
+                assertEquals(lastRequest, marker.store().exists("3.8.6", file), "marker after request " + refused
+                        + ": " + file);
+            }
+        }
+    }
+
+    /// What an extraction from a local repository did.
+    ///
+    /// @param requests the requests that reached the repository
+    /// @param failure  what the extraction threw, null when it wrote its snapshots
+    /// @param stopped  whether the client's requests stopped
+    private record Served(int requests, IOException failure, boolean stopped, SnapshotStore store) {
+    }
+
+    /// Extracts a release with the bytecode reader from a local repository serving `files` by path; `refuseAt`
+    /// (counted from 1, 0 for never) is the request answered with a 403, or, with `marker`, the answered request
+    /// after which another command on the same cache records a stop of an hour.
+    private Served extractServed(Map<String, byte[]> files, BomSnapshot bom, String run, int refuseAt, boolean marker)
+            throws IOException {
+        Path cache = dir.resolve(run).resolve("cache");
+        Path stopFile = cache.resolve(Pacer.STOP_FILE);
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            int request = requests.incrementAndGet();
+            byte[] body = files.get(exchange.getRequestURI().getPath().substring("/maven2/".length()));
+            if (request == refuseAt && marker) {
+                AtomicFiles.writeString(stopFile, (System.currentTimeMillis() + 3_600_000) + "\nHTTP 403 elsewhere\n");
+            } else if (request == refuseAt) {
+                body = null;
+                exchange.sendResponseHeaders(403, -1);
+            }
+            if (body != null) {
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } else if (request != refuseAt || marker) {
+                exchange.sendResponseHeaders(404, -1);
+            }
+            exchange.close();
+        });
+        server.start();
+        SnapshotStore store = new SnapshotStore(dir.resolve(run).resolve("snapshots"));
+        try (Http http = new Http(4, false, Pacer.shared(Pacer.Pause.parse("0.001"), cache.resolve(Pacer.LOCK_FILE)))) {
+            URI base = URI.create("http://" + server.getAddress().getHostString() + ":" + server.getAddress().getPort()
+                    + "/maven2/");
+            ConfigExtractor extractor = new ConfigExtractor(new MavenRepo(base, cache, http, RemoteJar.Options.DEFAULT),
+                    store, ConfigExtractor.DocAnnotationMode.SOURCES);
+            IOException failure = null;
+            try {
+                assertTrue(extractor.extract(bom, ConfigExtractor.Source.BYTECODE, true));
+            } catch (IOException e) {
+                failure = e;
+            }
+            return new Served(requests.get(), failure, http.stopped(), store);
+        } finally {
+            server.stop(0);
         }
     }
 

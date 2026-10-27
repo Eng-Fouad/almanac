@@ -343,7 +343,8 @@ class HttpTest {
         Http.Timing timing = timing(Duration.ofSeconds(5), Duration.ofSeconds(30), Duration.ofMillis(10),
                 Duration.ofMillis(40), Duration.ofHours(1));
         try (ServerSocket hangingUp = hangingUp();
-                Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.01"), lockFile()), timing)) {
+                Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.01"), lockFile()), timing);
+                Http other = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.01"), lockFile()), timing)) {
             URI gone = uri(hangingUp, "/gone");
             long start = System.nanoTime();
             IOException failure = assertThrows(IOException.class, () -> http.get(gone));
@@ -354,23 +355,44 @@ class HttpTest {
             assertTrue(millis >= 1240 - 5 * 16, "6 attempts in " + millis + " ms");
             assertEquals(6, http.requestCount(), "failed exchanges count as requests");
             assertFalse(http.stopped());
+            // another command on the same cache waits too: 1280 ms after the sixth failure
+            long otherStart = System.nanoTime();
+            assertEquals(200, other.get(uri("/ok/other-command")).status());
+            assertTrue(millisSince(otherStart) >= 1000, "the other command waited " + millisSince(otherStart) + " ms");
             assertEquals(200, http.get(uri("/ok/after")).status(), "the client still works");
         }
     }
 
     @Test
-    void networkFailuresThatGoOnStopTheRequests() throws Exception {
-        Http.Timing timing = timing(Duration.ofSeconds(5), Duration.ofSeconds(30), Duration.ofMillis(10),
-                Duration.ofMillis(1), Duration.ofMillis(300));
-        try (ServerSocket hangingUp = hangingUp(); Http http = new Http(1, false, Pacer.none(), timing)) {
+    void networkFailuresStopTheRequestsOnlyWhenManyGoOnForLong() throws Exception {
+        try (ServerSocket hangingUp = hangingUp()) {
             URI gone = uri(hangingUp, "/gone");
-            IOException first = assertThrows(IOException.class, () -> http.get(gone));
-            assertFalse(first instanceof Http.StoppedException, first.toString());
-            assertFalse(http.stopped(), "6 failures in 31 ms are no reason to stop");
-            // 1 + 2 + ... + 256 ms after the first failure, the tenth one has gone on for longer than 300 ms
-            Http.StoppedException stopped = assertThrows(Http.StoppedException.class, () -> http.get(gone));
-            assertTrue(stopped.getMessage().contains("10 network failures in a row"), stopped.getMessage());
-            assertEquals(10, http.requestCount());
+            // many failures in a row, but within moments: no stop before they have gone on for an hour
+            try (Http http = new Http(1, false, Pacer.none(), timing(Duration.ofSeconds(5), Duration.ofSeconds(30),
+                    Duration.ofMillis(10), Duration.ZERO, Duration.ofHours(1)))) {
+                for (int i = 0; i < 2; i++) {
+                    IOException failure = assertThrows(IOException.class, () -> http.get(gone));
+                    assertFalse(failure instanceof Http.StoppedException, failure.toString());
+                }
+                assertEquals(12, http.requestCount());
+                assertFalse(http.stopped(), "12 failures in a row are no reason to stop within the hour");
+            }
+            // failures for longer than the limit, but few of them: no stop either
+            try (Http http = new Http(1, false, Pacer.none(), timing(Duration.ofSeconds(5), Duration.ofSeconds(30),
+                    Duration.ofMillis(10), Duration.ofMillis(20), Duration.ofMillis(1)))) {
+                assertThrows(IOException.class, () -> http.get(gone));
+                assertFalse(http.stopped(), "6 failures in a row are no reason to stop, however long they took");
+            }
+            try (Http http = new Http(1, false, Pacer.none(), timing(Duration.ofSeconds(5), Duration.ofSeconds(30),
+                    Duration.ofMillis(10), Duration.ofMillis(1), Duration.ofMillis(300)))) {
+                IOException first = assertThrows(IOException.class, () -> http.get(gone));
+                assertFalse(first instanceof Http.StoppedException, first.toString());
+                assertFalse(http.stopped(), "6 failures in 31 ms are no reason to stop");
+                // 1 + 2 + ... + 256 ms after the first failure, the tenth one has gone on for longer than 300 ms
+                Http.StoppedException stopped = assertThrows(Http.StoppedException.class, () -> http.get(gone));
+                assertTrue(stopped.getMessage().contains("10 network failures in a row"), stopped.getMessage());
+                assertEquals(10, http.requestCount());
+            }
         }
     }
 
@@ -535,5 +557,23 @@ class HttpTest {
             http.refuseTooShortPause(pom);
             assertFalse(http.stopped());
         }
+    }
+
+    @Test
+    void aRequestToMavenCentralWithTooShortAPauseStopsTheClientBeforeThePacerIsAsked() throws IOException {
+        // a folder where the lock file should be: the pacer could not send the request either, so this test never
+        // reaches Maven Central, whatever the client does
+        Files.createDirectories(lockFile());
+        URI central = URI.create("https://repo1.maven.org/maven2/io/quarkus/quarkus-bom/maven-metadata.xml");
+        try (Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("1.5"), lockFile()), FAST)) {
+            Http.StoppedException stopped = assertThrows(Http.StoppedException.class, () -> http.get(central));
+            assertTrue(stopped.getMessage().contains("is too short for Maven Central"), stopped.getMessage());
+            assertTrue(http.stopped());
+            assertThrows(Http.StoppedException.class, () -> http.getRange(central, "bytes=-10"));
+            // and so is every later request, to any repository
+            assertThrows(Http.StoppedException.class, () -> http.get(uri("/ok")));
+            assertEquals(0, http.requestCount());
+        }
+        assertEquals(List.of(), paths);
     }
 }
