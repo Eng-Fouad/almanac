@@ -3,6 +3,7 @@ package io.quarkiverse.almanac.cli;
 import io.quarkiverse.almanac.Main;
 import io.quarkiverse.almanac.ScratchDir;
 import io.quarkiverse.almanac.config.sourcedoc.SourceDocCheck;
+import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.Pacer;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
@@ -20,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// `--pause` against Maven Central: the commands (and the source doc check) refuse a pause under 2 s before they open
-/// their cache, offline included; any pause goes for another repository.
+/// `--pause` against Maven Central: the commands (and the source doc check) refuse a pause shorter than
+/// [Http#CENTRAL_MIN_PAUSE] before they open their cache, offline included; any pause goes for another repository.
 class PauseOptionTest {
 
     /// Exit code and log (standard error, with the error of a failed command) of one run.
@@ -33,17 +34,18 @@ class PauseOptionTest {
         try (ScratchDir dir = ScratchDir.create()) {
             String work = dir.resolve("work").toString();
             String dataset = dir.resolve("dataset").toString();
-            for (String pause : List.of("0", "1.5", "0-5")) {
+            for (String pause : List.of("0", "0.5", "0-5")) {
                 Run versions = run("versions", "--offline", "--pause", pause, "--work", work, "--dataset", dataset);
                 assertEquals(1, versions.exitCode(), versions.log());
                 assertTrue(versions.log().contains("a pause of " + pause + " s is too short for Maven Central "
-                        + "(repo1.maven.org), which needs at least 2 s between requests"), versions.log());
+                        + "(repo1.maven.org), which needs at least " + Http.CENTRAL_MIN_PAUSE.toSeconds() + " s "
+                        + "between requests"), versions.log());
             }
             Run fullyQualified = run("bom", "--offline", "--pause", "0", "--repo", "https://repo1.maven.org./maven2/",
                     "--work", work, "--dataset", dataset);
             assertEquals(1, fullyQualified.exitCode(), fullyQualified.log());
             assertTrue(fullyQualified.log().contains("too short for Maven Central"), fullyQualified.log());
-            Run verify = run("verify", "official", "3.20.6", "--offline", "--pause", "1", "--work", work);
+            Run verify = run("verify", "official", "3.20.6", "--offline", "--pause", "0.5", "--work", work);
             assertEquals(1, verify.exitCode(), verify.log());
             assertTrue(verify.log().contains("too short for Maven Central"), verify.log());
             Run check = run(new SourceDocCheck(), "3.8.6", "--offline", "--pause", "0", "--work", work);

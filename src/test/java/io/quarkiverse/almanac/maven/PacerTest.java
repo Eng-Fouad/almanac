@@ -416,6 +416,9 @@ class PacerTest {
                                 caller.interrupt();
                             }
                         }));
+                        while (!Thread.currentThread().isInterrupted()) {
+                            Thread.onSpinWait();
+                        }
                         return "sent";
                     }));
                 } finally {
@@ -444,16 +447,28 @@ class PacerTest {
         try (ScratchDir dir = ScratchDir.create()) {
             Path lockFile = dir.resolve("cache").resolve(Pacer.LOCK_FILE);
             Files.createDirectories(lockFile.getParent());
-            // another name of the same file, where the file system ignores case: one turn lock all the same
-            Path alias = dir.resolve("CACHE").resolve(Pacer.LOCK_FILE.toUpperCase(Locale.ROOT));
             Files.createFile(lockFile);
-            Path second = Files.exists(alias) && Files.isSameFile(alias, lockFile) ? alias : lockFile;
             List<Pacer> pacers = List.of(Pacer.shared(Pause.parse("0.08-0.1"), lockFile),
-                    Pacer.shared(Pause.parse("0.08-0.1"), second));
+                    Pacer.shared(Pause.parse("0.08-0.1"), otherName(dir, lockFile)));
             List<long[]> spans = spans(pacers, 6, 2);
             assertEquals(24, spans.size());
             assertApart(spans, 40);
         }
+    }
+
+    /// Another name of the lock file, under which this process still takes one turn at a time (`FileChannel` refuses
+    /// two locks of one file within a process): through a linked folder where the platform allows links, else in
+    /// another case where the file system ignores case (which `Path` itself may ignore), else the same name.
+    private static Path otherName(ScratchDir dir, Path lockFile) throws IOException {
+        Path linked = dir.resolve("linked-cache");
+        try {
+            Files.createSymbolicLink(linked, lockFile.getParent());
+            return linked.resolve(lockFile.getFileName());
+        } catch (IOException | UnsupportedOperationException e) {
+            // Windows creates links only with a privilege
+        }
+        Path upperCase = dir.resolve("CACHE").resolve(Pacer.LOCK_FILE.toUpperCase(Locale.ROOT));
+        return Files.exists(upperCase) && Files.isSameFile(upperCase, lockFile) ? upperCase : lockFile;
     }
 
     /// Runs `requests` requests of 5 ms on each of `threads` virtual threads per pacer.

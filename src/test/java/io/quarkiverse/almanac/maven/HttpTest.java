@@ -565,7 +565,7 @@ class HttpTest {
         // reaches Maven Central, whatever the client does
         Files.createDirectories(lockFile());
         URI central = URI.create("https://repo1.maven.org/maven2/io/quarkus/quarkus-bom/maven-metadata.xml");
-        try (Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("1.5"), lockFile()), FAST)) {
+        try (Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.5"), lockFile()), FAST)) {
             Http.StoppedException stopped = assertThrows(Http.StoppedException.class, () -> http.get(central));
             assertTrue(stopped.getMessage().contains("is too short for Maven Central"), stopped.getMessage());
             assertTrue(http.stopped());
