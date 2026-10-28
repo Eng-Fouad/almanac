@@ -63,6 +63,23 @@ import java.util.regex.Pattern;
 /// property names, so that it may read either value; and where a type or classifier keeps the text of
 /// [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell from the placeholder.
 ///
+/// Known differences from Maven:
+/// - The resolution fails where Maven may build: for a part of the model or a property of the machine that Maven
+///   keeps as written after all (`${build.version}`, `${name}` without `<name>`, `${os.detected.classifier}`); for a
+///   profile that depends on the machine and could change the result or form a cycle, whichever machines activate it
+///   (none for JDK `[99,)`, every one for JDK `[1.8,)`) and also where a child replaces what it sets, and for a cycle
+///   that several such profiles form which no machine activates together; for a property that refers to itself with
+///   more text, also where Maven's order gives the value the resolution would; and for a property named after a
+///   model value that reads it (`version` = `${project.version}`, read as `${version}`), taken for a cycle.
+/// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}`), named after a model
+///   element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
+///   without `<name>`); and where Maven's validation rejects what the resolution does not read: a parent whose
+///   packaging is not `pom`, a pom without groupId, a system scope entry without systemPath, dependencies (not managed
+///   ones) without a valid id or version, modules in a pom whose packaging is not `pom`.
+/// - It writes another value: a property named `packaging` gives its value, where Maven takes the model's packaging;
+///   and a reference that no pom defines stays as written, where Maven also reads an environment variable of that
+///   name (`${HOME}`).
+///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
 public final class BomResolver {
@@ -252,8 +269,9 @@ public final class BomResolver {
     /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, on a parent,
     ///                     import or property reference cycle, when a managed dependency has no valid groupId and
     ///                     artifactId, when one keeps a reference that Maven may resolve where the resolution does not
-    ///                     look ([Elsewhere]), when the result reads a property that refers to itself with more text,
-    ///                     or when a type or classifier keeps the text of the placeholder
+    ///                     look ([Elsewhere]), when a profile that depends on the machine could change the result, when
+    ///                     the result reads a property that refers to itself with more text, or when a type or
+    ///                     classifier keeps the text of the placeholder
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
         Set<String> warnings = new LinkedHashSet<>();
