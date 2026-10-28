@@ -1,8 +1,10 @@
 package io.quarkiverse.almanac.util;
 
+import io.quarkiverse.almanac.maven.Http;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -33,5 +35,56 @@ class ParallelTest {
         }));
         assertSame(shared, thrown);
         assertArrayEquals(new Throwable[] {other}, thrown.getSuppressed());
+    }
+
+    @Test
+    void rethrowsTheExceptionOfAnUncheckedIOExceptionWithTheOtherFailuresAttachedToIt() {
+        // a stop of the requests that a task carries in an UncheckedIOException comes out as the stop
+        Http.StoppedException stopped = new Http.StoppedException("requests stopped");
+        IllegalStateException broken = new IllegalStateException("broken");
+        UncheckedIOException wrapped = new UncheckedIOException(new IOException("wrapped"));
+        IOException thrown = assertThrows(IOException.class, () -> Parallel.map(List.of(1, 2, 3, 4), 4, i -> {
+            if (i == 1) {
+                throw new UncheckedIOException(stopped);
+            }
+            if (i == 2) {
+                throw broken;
+            }
+            if (i == 4) {
+                throw wrapped;
+            }
+            return i;
+        }));
+        assertSame(stopped, thrown);
+        assertArrayEquals(new Throwable[] {broken, wrapped}, thrown.getSuppressed());
+    }
+
+    @Test
+    void anExceptionAndTheUncheckedIOExceptionsThatCarryItAreOneFailure() {
+        IOException shared = new IOException("shared");
+        IOException other = new IOException("other");
+        // the exception the first failure carries, thrown by other tasks too, is not attached to itself
+        IOException thrown = assertThrows(IOException.class, () -> Parallel.map(List.of(1, 2, 3, 4), 4, i -> {
+            if (i == 1 || i == 3) {
+                throw new UncheckedIOException(shared);
+            }
+            if (i == 2) {
+                throw shared;
+            }
+            throw other;
+        }));
+        assertSame(shared, thrown);
+        assertArrayEquals(new Throwable[] {other}, thrown.getSuppressed());
+
+        // nor is an UncheckedIOException that carries the first failure
+        IOException first = new IOException("first");
+        thrown = assertThrows(IOException.class, () -> Parallel.map(List.of(1, 2), 2, i -> {
+            if (i == 1) {
+                throw first;
+            }
+            throw new UncheckedIOException(first);
+        }));
+        assertSame(first, thrown);
+        assertArrayEquals(new Throwable[0], thrown.getSuppressed());
     }
 }
