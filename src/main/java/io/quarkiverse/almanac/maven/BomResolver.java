@@ -20,7 +20,6 @@ import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Supplier;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -56,9 +55,11 @@ import java.util.regex.Pattern;
 /// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
 /// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
 /// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
-/// The resolution fails instead where Maven may give such a reference a value that it does not know ([Elsewhere]),
-/// and where a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not
-/// tell from the placeholder.
+/// The resolution fails instead where Maven may give such a reference a value that it does not know ([Elsewhere]);
+/// where the result reads a property that refers to itself with more text (`version` = `x-${version}`), which Maven
+/// interpolates in place in an order that depends on the property names, so that it may read either value; and where
+/// a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell from the
+/// placeholder.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -242,7 +243,8 @@ public final class BomResolver {
     /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, on a parent,
     ///                     import or property reference cycle, when a managed dependency has no valid groupId and
     ///                     artifactId, when one keeps a reference that Maven may resolve where the resolution does not
-    ///                     look ([Elsewhere]), or when its type or classifier keeps the text of the placeholder
+    ///                     look ([Elsewhere]), when the result reads a property that refers to itself with more text,
+    ///                     or when a type or classifier keeps the text of the placeholder
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
         Set<String> warnings = new LinkedHashSet<>(model.warnings());
@@ -321,7 +323,7 @@ public final class BomResolver {
             putIfNotNull(modelValues, "parent.version", pom.parent().version());
         }
         String owner = groupId + ":" + pom.artifactId() + ":" + version;
-        Interpolator interpolator = new Interpolator(owner, modelValues, properties, pom.parent() != null);
+        Interpolator interpolator = new Interpolator(owner, modelValues, properties, pom.parent() != null, true);
         String coordinates = interpolator.apply(groupId) + ":" + interpolator.apply(pom.artifactId()) + ":"
                 + interpolator.apply(version);
 
@@ -359,7 +361,7 @@ public final class BomResolver {
             managed.add(entry);
         }
         // Maven interpolates every property of the model: a cycle fails also where no managed dependency reads it
-        Interpolator everyProperty = new Interpolator(owner, modelValues, properties, pom.parent() != null);
+        Interpolator everyProperty = new Interpolator(owner, modelValues, properties, pom.parent() != null, false);
         for (String property : new TreeSet<>(properties.keySet())) {
             everyProperty.apply(properties.get(property));
         }
@@ -718,26 +720,41 @@ public final class BomResolver {
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or
     /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Like
-    /// Maven, it passes over a value that holds the reference itself for the next one. An unknown reference stays as
-    /// written; a reference cycle fails, and so does a reference whose only values hold it, unless Maven may find
-    /// another value in the model or on the machine ([Elsewhere]). A profile that only some machines activate is not
-    /// applied, as everywhere in the resolution.
+    /// Maven, it passes over a value that holds the reference itself for the next one. Where the values go into the
+    /// result, a property that holds more than the bare reference to itself fails instead: Maven interpolates every
+    /// property in place before it reads the managed dependencies and the coordinates, in an order that depends on the
+    /// property names, so such a property gives either its own value, interpolated, or the next one. An unknown
+    /// reference stays as written; a reference cycle fails, and so does a reference whose only values hold it, unless
+    /// Maven may find another value in the model or on the machine ([Elsewhere]). A profile that only some machines
+    /// activate is not applied, as everywhere in the resolution.
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");
+
+        /// A value of a reference, looked up when needed.
+        @FunctionalInterface
+        private interface Source {
+
+            String get() throws IOException;
+        }
 
         private final String owner;
         private final Map<String, String> modelValues;
         private final Map<String, String> properties;
         private final boolean parent;
+        private final boolean result;
         private final Set<String> read = new HashSet<>();
 
         /// @param parent whether the model has a parent
-        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties, boolean parent) {
+        /// @param result whether the values go into the result, where a property that refers to itself with more text
+        ///               fails
+        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties, boolean parent,
+                boolean result) {
             this.owner = owner;
             this.modelValues = modelValues;
             this.properties = properties;
             this.parent = parent;
+            this.result = result;
         }
 
         String apply(String value) throws IOException {
@@ -772,11 +789,11 @@ public final class BomResolver {
             }
             // the values the resolution knows, in Maven's order: the model value of a prefixed name, the property, the
             // model value of an unprefixed name
-            List<Supplier<String>> sources = List.of(() -> key.equals(name) ? null : modelValues.get(key),
-                    () -> property(name), () -> modelValues.get(name));
             String itself = "${" + expression + "}";
+            List<Source> sources = List.of(() -> key.equals(name) ? null : modelValues.get(key),
+                    () -> property(name, itself), () -> modelValues.get(name));
             boolean passedOver = false;
-            for (Supplier<String> source : sources) {
+            for (Source source : sources) {
                 String value = source.get();
                 if (value != null && value.contains(itself)) {
                     passedOver = true;
@@ -797,9 +814,17 @@ public final class BomResolver {
             return null;
         }
 
-        private String property(String name) {
+        /// The property `name`, which the reference `itself` reads. Where the values go into the result, a property
+        /// that holds `itself` and more text fails: Maven may read its value interpolated in place or pass it over.
+        private String property(String name, String itself) throws IOException {
             read.add(name);
-            return properties.get(name);
+            String value = properties.get(name);
+            if (result && value != null && value.contains(itself) && !value.equals(itself)) {
+                throw new IOException(owner + ": " + itself + " reads the property " + name + ", " + value
+                        + ", which refers to itself with more text: Maven interpolates such a property in place, in an "
+                        + "order that depends on the property names, so the value of " + itself + " is not known");
+            }
+            return value;
         }
 
         private IOException cycle(List<String> path, String key) {

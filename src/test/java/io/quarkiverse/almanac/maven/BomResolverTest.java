@@ -314,14 +314,61 @@ class BomResolverTest {
     void aValueThatHoldsTheReferenceItselfIsPassedOverAsMavenDoes() throws IOException {
         // the next value is the model's version here, and one that Maven may find in the model or on the machine for
         // name and java.home; a cycle that the child overrides, or one in a profile that a plain build does not apply,
-        // is no cycle either
+        // is no cycle either; the result may read a bare reference to itself, which gives the next value in Maven too
         Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("a=pre-${a}")));
         String bom = project(":bom:", parent("g:parent:1"),
                 properties("a=plain", "version=x-${version}", "name=${name}", "java.home=${java.home}",
-                        "v2=${project.version}"),
-                managed(dep("g:v:${version}"), dep("g:w:${v2}")),
+                        "v2=${project.version}", "artifactId=${artifactId}"),
+                managed(dep("g:v:${project.version}"), dep("g:w:${v2}"), dep("g:x:${artifactId}")),
                 "<profiles>" + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>");
-        assertEquals(Map.of("g:v", "1", "g:w", "1"), versions(resolve(repo, bom)));
+        assertEquals(Map.of("g:v", "1", "g:w", "1", "g:x", "bom"), versions(resolve(repo, bom)));
+        assertEquals(Map.of("g:a", "1"), versions(resolve(BomResolver.PomSource.NONE,
+                project("g:bom:1", properties("version=${version}"), managed(dep("g:a:${version}"))))));
+    }
+
+    @Test
+    void aPropertyThatTheResultReadsAndThatRefersToItselfWithMoreTextFails() {
+        // Maven interpolates every property in place before it reads the managed dependencies and the coordinates, in
+        // an order that depends on the property names: version=x-${version} gives x-1 there, or 1 when it passes the
+        // property over, also through another property (a=${version} gives 1, n=${version} gives x-1)
+        Repo repo = new Repo()
+                .add("t:imp:5", project("t:imp:5", properties("version=${version}.Final"),
+                        managed(dep("g:b:${version}"))))
+                .add("t:p:7", project("t:p:7"));
+        String tail = ", which refers to itself with more text: Maven interpolates such a property in place, in an "
+                + "order that depends on the property names, so the value of ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("t:bom:1", properties("version=x-${version}"), managed(dep("g:a:${version}"))),
+                "t:bom:1: ${version} reads the property version, x-${version}" + tail + "${version} is not known");
+        failures.put(project("t:bom:1", managed(bomImport("t:imp:5"))),
+                "t:imp:5: ${version} reads the property version, ${version}.Final" + tail + "${version} is not known");
+        failures.put(project("t:bom:5", properties("version=${version}.0"), managed(bomImport("t:imp:${version}"))),
+                "t:bom:5: ${version} reads the property version, ${version}.0" + tail + "${version} is not known");
+        failures.put(project("t:bom:1", properties("artifactId=${artifactId}-x"), managed(dep("g:a:${artifactId}"))),
+                "t:bom:1: ${artifactId} reads the property artifactId, ${artifactId}-x" + tail
+                        + "${artifactId} is not known");
+        failures.put(project(":bom:", parent("t:p:7"), properties("parent.version=${parent.version}-x"),
+                        managed(dep("g:a:${parent.version}"))),
+                "t:bom:7: ${parent.version} reads the property parent.version, ${parent.version}-x" + tail
+                        + "${parent.version} is not known");
+        for (String reader : List.of("a", "n", "o", "zz", "vx", "netty.version")) {
+            failures.put(project("t:bom:1", properties(reader + "=${version}", "version=x-${version}"),
+                            managed(dep("g:a:${" + reader + "}"))),
+                    "t:bom:1: ${version} reads the property version, x-${version}" + tail + "${version} is not known");
+        }
+        // a groupId, a classifier, a scope and the coordinates of the BOM read it too
+        failures.put(project("t:bom:1", properties("groupId=${groupId}.x"), managed(dep("${groupId}:a:1"))),
+                "t:bom:1: ${groupId} reads the property groupId, ${groupId}.x" + tail + "${groupId} is not known");
+        failures.put(project("t:bom:1", properties("c=${c}-x"), managed(dep("g:a::${c}:1"))),
+                "t:bom:1: ${c} reads the property c, ${c}-x" + tail + "${c} is not known");
+        failures.put(project("t:bom:1", properties("s=x${s}"), managed("<dependency><groupId>g</groupId>"
+                        + "<artifactId>a</artifactId><version>1</version><scope>${s}</scope></dependency>")),
+                "t:bom:1: ${s} reads the property s, x${s}" + tail + "${s} is not known");
+        failures.put(project("g-${version}:bom:1", properties("version=x-${version}"), managed(dep("g:a:1"))),
+                "g-${version}:bom:1: ${version} reads the property version, x-${version}" + tail
+                        + "${version} is not known");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
 
     @Test
