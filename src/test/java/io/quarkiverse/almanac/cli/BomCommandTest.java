@@ -5,7 +5,10 @@ import io.quarkiverse.almanac.ScratchDir;
 import io.quarkiverse.almanac.maven.BomSnapshots;
 import io.quarkiverse.almanac.maven.Http;
 import io.quarkiverse.almanac.maven.MavenRepo;
+import io.quarkiverse.almanac.maven.Pacer;
+import io.quarkiverse.almanac.maven.QuarkusVersion;
 import io.quarkiverse.almanac.maven.RemoteJar;
+import io.quarkiverse.almanac.util.AtomicFiles;
 import io.quarkiverse.almanac.util.SnapshotStore;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
@@ -15,17 +18,35 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.UncheckedIOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// `bom --compare-pom`: the BOM of a release's git tag, resolved with its parent and imports, against the published
-/// flattened BOM's snapshot; and the pass of `bom` over its releases, in which one broken release fails alone.
+/// flattened BOM's snapshot; and the pass of `bom` over its releases, in which one broken release fails alone, a
+/// release's [RuntimeException] after a stop of the requests also notes the stop, and an [Error] is not caught.
 class BomCommandTest {
+
+    /// The repository of the passes below, which none of them reaches: their requests are refused before they are
+    /// sent, or not made (offline).
+    private static final String REPO = "http://127.0.0.1:9/maven2/";
+
+    /// The parent pom of release 9.2.1 ([#cacheReleases]), which is not cached.
+    private static final String PARENT_OF_9_2_1 = MavenRepo.artifactPath("io.quarkus", "quarkus-parent", "9.2.1",
+            "pom");
 
     private static final String PUBLISHED = """
             <project>
@@ -187,5 +208,121 @@ class BomCommandTest {
             }
             assertFalse(Files.exists(dir.resolve("work/snapshots/9.2.1/bom.json")));
         }
+    }
+
+    @Test
+    void aReleaseThatFailsWithARuntimeExceptionOnceRequestsStoppedLogsTheStop() throws Exception {
+        // the pom source of 9.2.1 requests its parent, which the stop marker of another command refuses, and carries
+        // the stop in an UncheckedIOException; no other release starts after it to log the stop
+        try (ScratchDir dir = ScratchDir.create()) {
+            cacheReleases(dir, "9.2.1");
+            AtomicFiles.writeString(dir.resolve("work/cache").resolve(Pacer.STOP_FILE),
+                    (System.currentTimeMillis() + 3_600_000) + "\nHTTP 403 for another command\n");
+
+            ByteArrayOutputStream log = new ByteArrayOutputStream();
+            PrintStream originalErr = System.err;
+            System.setErr(new PrintStream(log, true, StandardCharsets.UTF_8));
+            boolean passed;
+            // with a pause, requests take turns on the cache's lock file, next to the stop marker
+            try (Workspace workspace = Workspace.open(options(dir, "--pause", "0.001"))) {
+                BomSnapshots boms = boms(workspace, () -> {
+                    try {
+                        workspace.repo().artifact("io.quarkus", "quarkus-parent", "9.2.1", "pom");
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                });
+                passed = BomCommand.writeSnapshots(workspace, boms, versions("9.2.1"), false);
+            } finally {
+                System.setErr(originalErr);
+            }
+
+            String text = log.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+            assertFalse(passed, text);
+            assertTrue(text.contains("error: bom 9.2.1: java.io.UncheckedIOException: "), text);
+            assertEquals(1, text.lines().filter(line -> line.startsWith("error: bom: requests stopped (a stop of every "
+                    + "command on this cache until ")).count(), text);
+            assertTrue(text.contains("error: bom: 1 of 1 releases failed\n"), text);
+            assertFalse(text.contains("not attempted"), text);
+        }
+    }
+
+    @Test
+    void anErrorIsNotCaughtPerReleaseButEndsThePassOnceEveryReleaseRan() throws Exception {
+        // an Error, here of the pom source of 9.2.1, is no broken release that the pass could log and go on from
+        StackOverflowError error = new StackOverflowError("deep pom");
+        try (ScratchDir dir = ScratchDir.create()) {
+            cacheReleases(dir, "9.2.0", "9.2.1", "9.2.2");
+
+            ByteArrayOutputStream log = new ByteArrayOutputStream();
+            PrintStream originalErr = System.err;
+            System.setErr(new PrintStream(log, true, StandardCharsets.UTF_8));
+            try (Workspace workspace = Workspace.open(options(dir, "--offline", "--pause", "0", "--concurrency",
+                    "1"))) {
+                BomSnapshots boms = boms(workspace, () -> {
+                    throw error;
+                });
+                assertSame(error, assertThrows(StackOverflowError.class, () -> BomCommand.writeSnapshots(workspace,
+                        boms, versions("9.2.0", "9.2.1", "9.2.2"), false)));
+            } finally {
+                System.setErr(originalErr);
+            }
+
+            String text = log.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+            assertFalse(text.contains("error: bom 9.2.1"), text);
+            assertFalse(text.contains("releases failed"), text);
+            for (String written : new String[] {"9.2.0", "9.2.2"}) {
+                assertTrue(Files.exists(dir.resolve("work/snapshots/" + written + "/bom.json")), written);
+            }
+            assertFalse(Files.exists(dir.resolve("work/snapshots/9.2.1/bom.json")));
+        }
+    }
+
+    /// Caches the BOM pom of each release in the work folder of `dir`; that of 9.2.1 has the parent
+    /// [#PARENT_OF_9_2_1].
+    private static void cacheReleases(ScratchDir dir, String... versions) throws IOException {
+        for (String version : versions) {
+            String parent = version.equals("9.2.1")
+                    ? "<parent><groupId>io.quarkus</groupId><artifactId>quarkus-parent</artifactId><version>9.2.1"
+                    + "</version></parent>"
+                    : "";
+            cache(dir.resolve("work/cache"), "io.quarkus", "quarkus-bom", version, "<project>" + parent + "<groupId>"
+                    + "io.quarkus</groupId><artifactId>quarkus-bom</artifactId><version>" + version + "</version>"
+                    + "<dependencyManagement><dependencies><dependency><groupId>io.quarkus</groupId><artifactId>"
+                    + "quarkus-core</artifactId><version>" + version + "</version></dependency></dependencies>"
+                    + "</dependencyManagement></project>");
+        }
+    }
+
+    /// The options of a run on the work folder of `dir` against [#REPO], with `more`.
+    private static CommonOptions options(ScratchDir dir, String... more) {
+        List<String> args = new ArrayList<>(List.of("--work", dir.resolve("work").toString(), "--dataset",
+                dir.resolve("dataset").toString(), "--repo", REPO));
+        args.addAll(List.of(more));
+        return CommandLine.populateCommand(new CommonOptions(), args.toArray(String[]::new));
+    }
+
+    /// The BOM snapshots of the work folder of `workspace`, read from its cache with its client, except that the pom
+    /// source runs `failure` first for [#PARENT_OF_9_2_1], as the cache folder resolves its path: a failure that no
+    /// cached file or answer of the repository gives.
+    private static BomSnapshots boms(Workspace workspace, Runnable failure) {
+        Path cache = workspace.cacheDir();
+        Path failing = (Path) Proxy.newProxyInstance(BomCommandTest.class.getClassLoader(), new Class<?>[] {Path.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("resolve") && PARENT_OF_9_2_1.equals(args[0])) {
+                        failure.run();
+                    }
+                    try {
+                        return method.invoke(cache, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        return new BomSnapshots(new MavenRepo(URI.create(REPO), failing, workspace.repo().http(),
+                RemoteJar.Options.DEFAULT), workspace.workSnapshots());
+    }
+
+    private static List<QuarkusVersion> versions(String... versions) {
+        return Stream.of(versions).map(QuarkusVersion::parse).toList();
     }
 }
