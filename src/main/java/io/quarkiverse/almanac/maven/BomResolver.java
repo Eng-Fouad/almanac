@@ -75,14 +75,17 @@ import java.util.regex.Pattern;
 ///   the BOM; for a property that refers to itself with more text, also where Maven's order gives the value the
 ///   resolution would; and, taken for a cycle, for a property named after a model value that reads it (`version` =
 ///   `${project.version}`, read as `${version}`) and for an unused property that refers to itself where only a getter
-///   gives Maven a value (`class` = `${class}`, `version.empty` = `${version.empty}`).
+///   gives Maven a value (`class` = `${class}`, `version.empty` = `${version.empty}`) or only some machines or the
+///   `mvn` launcher do (`native.encoding` = `${native.encoding}`, `classworlds.conf` = `${classworlds.conf}`).
 /// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}` or `x-${X}`), named after
 ///   a model element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
-///   without `<name>`); and where Maven's validation of the model rejects what the resolution does not check, such
-///   as a pom without modelVersion, a pom without groupId or version, with an invalid groupId or an empty packaging,
-///   a parent whose packaging is not `pom`, a system scope entry without systemPath or a systemPath without system
-///   scope, dependencies (not managed ones) without a valid id or version, and modules in a pom whose packaging is
-///   not `pom`.
+///   without `<name>`); for a model element that refers to itself or reaches itself through properties, which the
+///   resolution does not interpolate (`<url>${url}</url>`, `<packaging>${packaging}</packaging>`, `<name>${a}</name>`
+///   with `a` = `${project.name}`); and where Maven's validation of the model rejects what the resolution does not
+///   check, such as a pom without modelVersion, a pom without groupId or version, with an invalid groupId or an empty
+///   packaging, a parent whose packaging is not `pom`, a system scope entry without systemPath or a systemPath without
+///   system scope, dependencies (not managed ones) without a valid id or version, and modules in a pom whose packaging
+///   is not `pom`.
 /// - It writes another value: a reference that no pom defines stays as written, where Maven also reads an environment
 ///   variable of that name (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and
 ///   [#MACHINE_NAMES], as another vendor's JVM or another launcher than `mvn` may, counts as absent, in a reference and
@@ -261,7 +264,8 @@ public final class BomResolver {
             "line.", "path.", "sun.", "maven.");
     /// The property that Maven 3.9 sets to the packaging of the project it builds, for profile activation and, before
     /// the model's own properties and packaging, for interpolation: in a build that imports the BOM, that project's
-    /// packaging, also in the BOM, its parents and its imports.
+    /// packaging, also in the BOM, its parents and its imports. The cycle pass reads it as the BOM's own packaging, as
+    /// in a build of the BOM itself.
     private static final String BUILD_PACKAGING = "packaging";
     /// Properties outside [#MACHINE_PROPERTIES] that the JDK sets on some machines (its encodings since JDK 17, the
     /// proxy settings it takes from macOS, the toolkit of JDKs before 13), that the `mvn` launcher sets, and the one
@@ -900,9 +904,10 @@ public final class BomResolver {
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or
     /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Maven
-    /// reads `${packaging}` among the properties it sets for the build ([BomResolver#BUILD_PACKAGING]), which the
-    /// resolution does not know: it stays as written. Like Maven, it passes over a value that holds the reference
-    /// itself for the next one. Where the values go into the result, a property that holds more than the bare
+    /// reads `${packaging}` first among the properties it sets for the build ([BomResolver#BUILD_PACKAGING]): where the
+    /// values go into the result, the resolution does not know it and it stays as written; the cycle pass takes the
+    /// BOM's own packaging, as when Maven builds the BOM itself. Like Maven, it passes over a value that holds the
+    /// reference itself for the next one. Where the values go into the result, a property that holds more than the bare
     /// reference to itself fails instead: Maven interpolates every property in place before it reads the managed
     /// dependencies and the coordinates, in an order that depends on the property names, so such a property gives
     /// either its own value, interpolated, or the next one. An unknown reference stays as written; a reference cycle
@@ -968,9 +973,19 @@ public final class BomResolver {
             if (resolving.contains(key)) {
                 throw cycle(resolving, key);
             }
-            // Maven finds it among the properties that it sets for the build, which the resolution does not know
+            // Maven finds it first among the properties that it sets for the build. Where the values go into the
+            // result, the resolution does not know that packaging, so it stays as written; the cycle pass takes the
+            // BOM's own, as when Maven builds the BOM itself, so that a cycle through it fails as in Maven
             if (name.equals(BUILD_PACKAGING)) {
-                return null;
+                if (result) {
+                    return null;
+                }
+                resolving.add(key);
+                try {
+                    return interpolate(modelValues.get("packaging"), resolving);
+                } finally {
+                    resolving.removeLast();
+                }
             }
             // the values the resolution knows, in Maven's order: the model value of a prefixed name, the property, the
             // model value of an unprefixed name

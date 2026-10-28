@@ -309,6 +309,14 @@ class BomResolverTest {
         // JDKs before 17 have no native.encoding to give it a value
         failures.put(project("g:bom:1", properties("native.encoding=${native.encoding}"), managed(dep("g:x:1"))),
                 "g:bom:1: the property references form a cycle: native.encoding -> native.encoding");
+        // the build packaging that Maven reads first is the BOM's own when Maven builds the BOM: a cycle through it,
+        // also by way of another property
+        failures.put(project("g:bom:1", "<packaging>${pk}</packaging>", properties("pk=${packaging}"),
+                        managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: packaging -> pk -> packaging");
+        failures.put(project("g:bom:1", "<packaging>${pk}</packaging>", properties("pk=${x}", "x=${packaging}"),
+                        managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: x -> packaging -> pk -> x");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -610,7 +618,8 @@ class BomResolverTest {
                         + "; 1 more managed dependency keeps such a reference");
         // also a property that the JDK sets outside those prefixes, or that the mvn launcher sets
         for (String reference : List.of("${native.encoding}", "${classworlds.conf}", "${library.jansi.path}",
-                "${http.nonProxyHosts}")) {
+                "${http.nonProxyHosts}", "${https.proxyHost}", "${socksProxyHost}", "${gopherProxyHost}",
+                "${awt.toolkit}")) {
             failures.put(project("g:bom:1", managed(dep("g:a:" + reference))),
                     "the managed dependency g:a (declared in g:bom:1) keeps " + reference + machine);
         }
