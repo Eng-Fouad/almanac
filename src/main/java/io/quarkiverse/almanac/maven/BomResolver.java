@@ -69,10 +69,12 @@ import java.util.regex.Pattern;
 ///   profile that depends on the machine and could change the result or form a cycle, whichever machines activate it
 ///   (none for JDK `[99,)`, every one for JDK `[1.8,)`) and also where a child replaces what it sets, and for a cycle
 ///   that several such profiles form which no machine activates together; for a property that refers to itself with
-///   more text, also where Maven's order gives the value the resolution would; and for a property named after a
-///   model value that reads it (`version` = `${project.version}`, read as `${version}`), taken for a cycle.
-/// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}`), named after a model
-///   element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
+///   more text, also where Maven's order gives the value the resolution would; and, taken for a cycle, for a property
+///   named after a model value that reads it (`version` = `${project.version}`, read as `${version}`) and for an
+///   unused property that refers to itself where only a getter gives Maven a value (`class` = `${class}`,
+///   `version.empty` = `${version.empty}`).
+/// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}` or `x-${X}`), named after
+///   a model element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
 ///   without `<name>`); and where Maven's validation rejects what the resolution does not read: a parent whose
 ///   packaging is not `pom`, a pom without groupId, a system scope entry without systemPath, dependencies (not managed
 ///   ones) without a valid id or version, modules in a pom whose packaging is not `pom`.
@@ -226,12 +228,11 @@ public final class BomResolver {
     private static final Set<String> COORDINATES = Set.of("groupId", "artifactId", "version", "packaging");
     /// What a reference reads of a text element's String after a dot, as in `${version.empty}`: its getters.
     private static final Set<String> STRING_GETTERS = Set.of("blank", "bytes", "class", "empty");
-    /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`, and
-    /// the model's class (`${class}`, `${project.class.simpleName}`).
-    private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "class", "contributors",
-            "dependencies", "dependencyManagement", "developers", "distributionManagement", "issueManagement",
-            "licenses", "mailingLists", "modules", "organization", "pluginRepositories", "pomFile", "prerequisites",
-            "profiles", "projectDirectory", "properties", "reporting", "reports", "repositories", "scm");
+    /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`.
+    private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "contributors", "dependencies",
+            "dependencyManagement", "developers", "distributionManagement", "issueManagement", "licenses",
+            "mailingLists", "modules", "organization", "pluginRepositories", "pomFile", "prerequisites", "profiles",
+            "projectDirectory", "properties", "reporting", "reports", "repositories", "scm");
 
     /// What the resolution needs of a pom's effective model.
     ///
@@ -596,26 +597,42 @@ public final class BomResolver {
 
     /// Where Maven may find a value for the reference `${name}` that no property defines, a value that the resolution
     /// does not know; null when Maven keeps such a reference as written in every plain build. Maven reads the model
-    /// along the reference's path, with or without the `project.` or `pom.` prefix (a text element as a whole or
-    /// through a getter of its String, `${version.empty}`, while `${version.jdk-misc}` reads nothing), and an
-    /// unprefixed reference also among the properties of the machine.
+    /// along the reference's path, with or without the `project.` or `pom.` prefix ([#byName]), also through a getter:
+    /// of a text element's String, `${version.empty}` (while `${version.jdk-misc}` reads nothing), or of the model,
+    /// `${class}`; and an unprefixed reference also among the properties of the machine.
     ///
     /// @param parent     whether the model has a parent
     /// @param machineSet the properties that profiles depending on the machine set
     private static Elsewhere elsewhere(String name, boolean parent, Set<String> machineSet) {
+        Elsewhere byName = byName(name, parent);
+        if (byName != null) {
+            return byName;
+        }
         String path = Interpolator.unprefixed(name);
         String[] parts = path.split("[.\\[(]", 3);
-        String element = parts[0];
-        boolean text = MODEL_TEXT.contains(element) || COORDINATES.contains(element);
-        if (MODEL_PARTS.contains(element) || element.equals(path) && MODEL_TEXT.contains(element)
-                || element.equals("parent") && parent || text && parts.length > 1
-                && path.charAt(element.length()) == '.' && STRING_GETTERS.contains(parts[1])) {
+        boolean text = MODEL_TEXT.contains(parts[0]) || COORDINATES.contains(parts[0]);
+        if (parts[0].equals("class") || text && parts.length > 1 && path.charAt(parts[0].length()) == '.'
+                && STRING_GETTERS.contains(parts[1])) {
             return Elsewhere.MODEL;
         }
-        if (path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith)) {
-            return Elsewhere.MACHINE;
-        }
         return machineSet.contains(name) ? Elsewhere.PROFILE : null;
+    }
+
+    /// Where Maven finds a value for the reference `${name}` by its name, as the resolution takes it where every value
+    /// of the reference that it knows holds the reference itself: an element of the model that the name names, a text
+    /// element as a whole (`${name}`) or one with parts along a path (`${build.finalName}`), or a property of the
+    /// machine ([#MACHINE_PROPERTIES]); null otherwise, also where only a getter would give a value (`${class}`,
+    /// `${version.empty}`), which Maven finds on some models only (not `${name.empty}` without `<name>`).
+    ///
+    /// @param parent whether the model has a parent
+    private static Elsewhere byName(String name, boolean parent) {
+        String path = Interpolator.unprefixed(name);
+        String element = path.split("[.\\[(]", 2)[0];
+        if (MODEL_PARTS.contains(element) || element.equals(path) && MODEL_TEXT.contains(element)
+                || element.equals("parent") && parent) {
+            return Elsewhere.MODEL;
+        }
+        return path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith) ? Elsewhere.MACHINE : null;
     }
 
     /// The profiles of a pom that a plain Maven build activates, in declaration order: those whose activation
@@ -858,7 +875,7 @@ public final class BomResolver {
     /// property in place before it reads the managed dependencies and the coordinates, in an order that depends on the
     /// property names, so such a property gives either its own value, interpolated, or the next one. An unknown
     /// reference stays as written; a reference cycle fails, and so does a reference whose only values hold it, unless
-    /// Maven may find another value in the model or on the machine ([Elsewhere]).
+    /// Maven finds another value in the model or on the machine by the reference's name ([BomResolver#byName]).
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");
@@ -938,7 +955,8 @@ public final class BomResolver {
                     }
                 }
             }
-            if (passedOver && elsewhere(name, parent, Set.of()) == null) {
+            // Maven looks further, in the model and on the machine, and fails on a cycle where it finds nothing there
+            if (passedOver && byName(name, parent) == null) {
                 List<String> path = new ArrayList<>(resolving);
                 path.add(key);
                 throw cycle(path, key);

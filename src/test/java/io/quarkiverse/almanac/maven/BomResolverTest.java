@@ -326,6 +326,37 @@ class BomResolverTest {
     }
 
     @Test
+    void aPropertyThatRefersToItselfIsACycleWhereOnlyAGetterWouldGiveAValue() {
+        // Maven finds nothing for ${name.empty} without <name>, nor for ${class.foo}, and fails on the cycle, also in a
+        // parent, an imported BOM or a profile that depends on the machine; it finds a value for ${version.empty} and
+        // ${class}, which the resolution does not tell apart, so these fail too
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", properties("url.blank=${url.blank}")))
+                .add("org.imp:i:1", project("org.imp:i:1", properties("name.empty=${name.empty}"),
+                        managed(dep("g:b:1"))));
+        String cycle = "g:bom:1: the property references form a cycle: ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", properties("name.empty=${name.empty}"), managed(dep("g:a:1"))),
+                cycle + "name.empty -> name.empty");
+        failures.put(project("g:bom:1", properties("class.foo=${class.foo}"), managed(dep("g:a:1"))),
+                cycle + "class.foo -> class.foo");
+        failures.put(project("g:bom:1", properties("description.bytes=x-${description.bytes}"), managed(dep("g:a:1"))),
+                cycle + "description.bytes -> description.bytes");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:1"))), cycle + "url.blank -> url.blank");
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "org.imp:i:1: the property references form a cycle: name.empty -> name.empty");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>" + profile("j", "<jdk>[11,)</jdk>",
+                        properties("description.empty=${description.empty}")) + "</profiles>"),
+                cycle + "description.empty -> description.empty, on the machines that activate the profile j of "
+                        + "g:bom:1 (JDK [11,))");
+        failures.put(project("g:bom:1", properties("version.empty=${version.empty}"), managed(dep("g:a:1"))),
+                cycle + "version.empty -> version.empty");
+        failures.put(project("g:bom:1", properties("class=${class}"), managed(dep("g:a:1"))), cycle + "class -> class");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
     void aPropertyThatTheResultReadsAndThatRefersToItselfWithMoreTextFails() {
         // Maven interpolates every property in place before it reads the managed dependencies and the coordinates, in
         // an order that depends on the property names: version=x-${version} gives x-1 there, or 1 when it passes the
