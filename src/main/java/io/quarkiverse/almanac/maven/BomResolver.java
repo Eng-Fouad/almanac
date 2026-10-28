@@ -31,8 +31,10 @@ import java.util.regex.Pattern;
 ///    property condition holds when it asks for a property to be absent (`!name`, or a `!value`), and
 ///    `activeByDefault` profiles count when no other profile of the pom is active. Their properties and managed
 ///    dependencies override the pom's own. A profile whose activation depends on the machine (JDK, OS, file, or a
-///    property the JVM or the environment provides) is not applied; a warning names it when it manages dependencies or
-///    sets a property the resolution reads.
+///    property the JVM or the environment provides) is not applied. The resolution fails where such a profile could
+///    change the result: when it manages dependencies or sets a property the resolution reads, and when it is in a pom
+///    whose `activeByDefault` profiles apply and one of these does, as Maven drops them on the machines that activate
+///    it.
 /// 2. **Inheritance.** The pom and its parents, read from the repository. A pom's groupId and version default to its
 ///    parent's; properties merge, the child's value winning; managed dependencies merge by management key
 ///    (`groupId:artifactId:type:classifier`): a pom's own entries, then its parents' entries of other keys.
@@ -51,15 +53,15 @@ import java.util.regex.Pattern;
 /// entries with the same id the first counts.
 ///
 /// Where Maven fails to build the model, so does the resolution: parent, import and property reference cycles (also a
-/// property cycle that no managed dependency reads, since Maven interpolates every property of the model), and a
-/// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
-/// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
-/// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
-/// The resolution fails instead where Maven may give such a reference a value that it does not know ([Elsewhere]);
-/// where the result reads a property that refers to itself with more text (`version` = `x-${version}`), which Maven
-/// interpolates in place in an order that depends on the property names, so that it may read either value; and where
-/// a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell from the
-/// placeholder.
+/// property cycle that no managed dependency reads, since Maven interpolates every property of the model, and one that
+/// only the profiles a machine activates form), and a managed dependency without a valid groupId and artifactId
+/// (Maven's validation of the model). A reference that no pom defines stays as written in a managed dependency's
+/// version, type or classifier, as in Maven's effective model: [Result#unresolved()] lists the entries that keep one,
+/// and [Result#describeUnresolved()] says where they come from. The resolution fails instead where Maven may give such
+/// a reference a value that it does not know ([Elsewhere]); where the result reads a property that refers to itself
+/// with more text (`version` = `x-${version}`), which Maven interpolates in place in an order that depends on the
+/// property names, so that it may read either value; and where a type or classifier keeps the text of
+/// [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell from the placeholder.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -216,9 +218,8 @@ public final class BomResolver {
     /// @param imports     the BOMs it imports, directly or not, in resolution order
     /// @param poms        the poms read to build it, its own included
     /// @param profiles    the profiles applied to it that matter, its imports' included
-    /// @param warnings    what was ignored
     private record Model(String coordinates, List<Managed> managed, List<String> parents, List<String> imports,
-                         Set<String> poms, List<String> profiles, List<String> warnings) {
+                         Set<String> poms, List<String> profiles) {
     }
 
     /// Whether Maven activates a profile through its `<activation>` conditions in a plain build.
@@ -227,6 +228,8 @@ public final class BomResolver {
     /// Properties the JVM, the operating system environment or Maven itself provide, which a plain build has.
     private static final List<String> MACHINE_PROPERTIES = List.of("env.", "java.", "jdk.", "os.", "user.", "file.",
             "line.", "path.", "sun.", "maven.");
+    /// The most profiles depending on the machine that could add a property cycle whose every combination is tried.
+    private static final int MOST_VARYING_PROFILES = 10;
 
     private final PomSource source;
     private final Map<String, CompletableFuture<Optional<Pom>>> fetched = new ConcurrentHashMap<>();
@@ -247,7 +250,7 @@ public final class BomResolver {
     ///                     or when a type or classifier keeps the text of the placeholder
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
-        Set<String> warnings = new LinkedHashSet<>(model.warnings());
+        Set<String> warnings = new LinkedHashSet<>();
         Map<String, Entry> byId = new TreeMap<>();
         List<String> doubts = new ArrayList<>();
         for (Managed managed : model.managed()) {
@@ -306,12 +309,8 @@ public final class BomResolver {
         }
         String groupId = lineage.stream().map(Pom::groupId).filter(Objects::nonNull).findFirst().orElse(null);
         String version = lineage.stream().map(Pom::version).filter(Objects::nonNull).findFirst().orElse(null);
-        List<List<Pom.Profile>> active = lineage.stream().map(BomResolver::activeProfiles).toList();
-        Map<String, String> properties = new HashMap<>();
-        for (int i = lineage.size() - 1; i >= 0; i--) {
-            properties.putAll(lineage.get(i).properties());
-            active.get(i).forEach(profile -> properties.putAll(profile.properties()));
-        }
+        List<List<Pom.Profile>> active = lineage.stream().map(each -> activeProfiles(each, List.of())).toList();
+        Map<String, String> properties = properties(lineage, active);
         Map<String, String> modelValues = new HashMap<>();
         putIfNotNull(modelValues, "groupId", groupId);
         putIfNotNull(modelValues, "artifactId", pom.artifactId());
@@ -360,39 +359,31 @@ public final class BomResolver {
             }
             managed.add(entry);
         }
-        // Maven interpolates every property of the model: a cycle fails also where no managed dependency reads it
-        Interpolator everyProperty = new Interpolator(owner, modelValues, properties, pom.parent() != null, false);
-        for (String property : new TreeSet<>(properties.keySet())) {
-            everyProperty.apply(properties.get(property));
-        }
+        requireNoPropertyCycle(owner, lineage, active, origins, modelValues, pom.parent() != null);
 
         List<String> profiles = new ArrayList<>();
-        Set<String> warnings = new LinkedHashSet<>();
         for (int i = 0; i < lineage.size(); i++) {
-            for (Pom.Profile profile : lineage.get(i).profiles()) {
-                boolean matters = !profile.managed().isEmpty()
-                        || profile.properties().keySet().stream().anyMatch(interpolator::read);
+            Pom current = lineage.get(i);
+            for (Pom.Profile profile : current.profiles()) {
+                String change = change(profile, interpolator, coordinates);
+                if (change == null) {
+                    continue;
+                }
                 if (active.get(i).contains(profile)) {
-                    if (matters) {
-                        profiles.add(profile.id() + " of " + origins.get(i));
+                    profiles.add(profile.id() + " of " + origins.get(i));
+                    // Maven drops the profiles active by default where another profile of the pom is activated
+                    Optional<Pom.Profile> dropping = byDefault(current) ? current.profiles().stream()
+                            .filter(other -> other != profile
+                                    && activated(other.activation()) == Activated.DEPENDS_ON_THE_MACHINE)
+                            .findFirst() : Optional.empty();
+                    if (dropping.isPresent()) {
+                        throw new IOException("the profile " + profile.id() + " of " + origins.get(i) + ", active by "
+                                + "default, " + change + ", and Maven drops it on the machines that activate the "
+                                + describe(dropping.get(), origins.get(i)));
                     }
-                    continue;
-                }
-                if (activated(profile.activation()) != Activated.DEPENDS_ON_THE_MACHINE) {
-                    continue;
-                }
-                String which = describe(profile, origins.get(i));
-                if (!profile.managed().isEmpty()) {
-                    warnings.add(String.format(Locale.ROOT, "profiles that depend on the machine are not applied: "
-                            + "%s manages %d %s", which, profile.managed().size(),
-                            profile.managed().size() == 1 ? "dependency" : "dependencies"));
-                }
-                for (String property : profile.properties().keySet()) {
-                    if (interpolator.read(property)) {
-                        warnings.add(String.format(Locale.ROOT, "profiles that depend on the machine are not "
-                                + "applied: %s sets the property %s, which the managed dependencies of %s use", which,
-                                property, coordinates));
-                    }
+                } else if (activated(profile.activation()) == Activated.DEPENDS_ON_THE_MACHINE) {
+                    throw new IOException("the " + describe(profile, origins.get(i)) + " " + change
+                            + ", and Maven applies it on the machines that activate it");
                 }
             }
         }
@@ -401,8 +392,7 @@ public final class BomResolver {
         List<Managed> own = managed.stream().filter(entry -> !entry.isImport()).toList();
         List<Managed> imports = managed.stream().filter(Managed::isImport).toList();
         if (imports.isEmpty()) {
-            return new Model(coordinates, own, List.copyOf(parents), List.of(), poms, List.copyOf(profiles),
-                    List.copyOf(warnings));
+            return new Model(coordinates, own, List.copyOf(parents), List.of(), poms, List.copyOf(profiles));
         }
         List<String> chain = new ArrayList<>(importers);
         chain.add(coordinates);
@@ -423,13 +413,80 @@ public final class BomResolver {
             imported.addAll(model.imports());
             poms.addAll(model.poms());
             model.profiles().stream().filter(profile -> !profiles.contains(profile)).forEach(profiles::add);
-            warnings.addAll(model.warnings());
             for (Managed fromImport : model.managed()) {
                 byKey.putIfAbsent(fromImport.key(), fromImport.via(id));
             }
         }
         return new Model(coordinates, List.copyOf(byKey.values()), List.copyOf(parents), List.copyOf(imported), poms,
-                List.copyOf(profiles), List.copyOf(warnings));
+                List.copyOf(profiles));
+    }
+
+    /// What a profile changes in the result of a model, for an error: `manages 2 dependencies`, or `sets the property
+    /// x, which the resolution of g:a:1 reads`; null when it does neither.
+    private static String change(Pom.Profile profile, Interpolator interpolator, String coordinates) {
+        if (!profile.managed().isEmpty()) {
+            return "manages " + profile.managed().size()
+                    + (profile.managed().size() == 1 ? " dependency" : " dependencies");
+        }
+        return profile.properties().keySet().stream().filter(interpolator::read).findFirst()
+                .map(property -> "sets the property " + property + ", which the resolution of " + coordinates
+                        + " reads")
+                .orElse(null);
+    }
+
+    /// Fails on a property reference cycle, since Maven interpolates every property of the model, also one that no
+    /// managed dependency reads. It looks with the profiles that a plain build applies on every machine, then with
+    /// profiles that depend on the machine applied as well, in every combination of those that could add a cycle: a
+    /// profile that sets a property with a reference, or one whose activation drops default profiles of its pom that
+    /// set properties. Any other only replaces values with values without a reference, which adds no cycle.
+    ///
+    /// @param active  the profiles each pom of the lineage applies on every machine
+    /// @param origins the poms of the lineage, `groupId:artifactId:version`
+    private static void requireNoPropertyCycle(String owner, List<Pom> lineage, List<List<Pom.Profile>> active,
+            List<String> origins, Map<String, String> modelValues, boolean parent) throws IOException {
+        List<Pom.Profile> varying = new ArrayList<>();
+        List<String> described = new ArrayList<>();
+        for (int i = 0; i < lineage.size(); i++) {
+            for (Pom.Profile profile : lineage.get(i).profiles()) {
+                if (activated(profile.activation()) != Activated.DEPENDS_ON_THE_MACHINE) {
+                    continue;
+                }
+                boolean dropsDefaults = byDefault(lineage.get(i)) && active.get(i).stream()
+                        .anyMatch(other -> other != profile && !other.properties().isEmpty());
+                if (dropsDefaults || profile.properties().values().stream().anyMatch(value -> value.contains("${"))) {
+                    varying.add(profile);
+                    described.add(describe(profile, origins.get(i)));
+                }
+            }
+        }
+        if (varying.size() > MOST_VARYING_PROFILES) {
+            throw new IOException(owner + ": " + varying.size() + " profiles that depend on the machine could add a "
+                    + "property reference cycle, too many to try each combination: " + String.join(", ", described));
+        }
+        for (int combination = 0; combination < 1 << varying.size(); combination++) {
+            List<Pom.Profile> holding = new ArrayList<>();
+            List<String> which = new ArrayList<>();
+            for (int bit = 0; bit < varying.size(); bit++) {
+                if ((combination & 1 << bit) != 0) {
+                    holding.add(varying.get(bit));
+                    which.add(described.get(bit));
+                }
+            }
+            Map<String, String> properties = properties(lineage,
+                    lineage.stream().map(each -> activeProfiles(each, holding)).toList());
+            Interpolator everyProperty = new Interpolator(owner, modelValues, properties, parent, false);
+            try {
+                for (String property : new TreeSet<>(properties.keySet())) {
+                    everyProperty.apply(properties.get(property));
+                }
+            } catch (IOException e) {
+                if (which.isEmpty()) {
+                    throw e;
+                }
+                throw new IOException(e.getMessage() + ", on the machines that activate the "
+                        + String.join(" and the ", which), e);
+            }
+        }
     }
 
     /// Fails, as Maven's validation of the effective model does, on a managed dependency whose groupId or artifactId
@@ -509,19 +566,41 @@ public final class BomResolver {
         return machineSet.contains(name) ? Elsewhere.PROFILE : null;
     }
 
-    /// The profiles of a pom that a plain Maven build activates on every machine, in declaration order: those whose
-    /// activation conditions hold, else those active by default.
-    private static List<Pom.Profile> activeProfiles(Pom pom) {
+    /// The profiles of a pom that a plain Maven build activates, in declaration order: those whose activation
+    /// conditions hold, else those active by default.
+    ///
+    /// @param holding the profiles that depend on the machine whose conditions are taken to hold (none: the profiles
+    ///                applied on every machine)
+    private static List<Pom.Profile> activeProfiles(Pom pom, List<Pom.Profile> holding) {
         List<Pom.Profile> active = new ArrayList<>();
         List<Pom.Profile> byDefault = new ArrayList<>();
         for (Pom.Profile profile : pom.profiles()) {
-            if (activated(profile.activation()) == Activated.YES) {
+            if (activated(profile.activation()) == Activated.YES || holding.stream().anyMatch(on -> on == profile)) {
                 active.add(profile);
             } else if (profile.activation() != null && profile.activation().activeByDefault()) {
                 byDefault.add(profile);
             }
         }
         return active.isEmpty() ? byDefault : active;
+    }
+
+    /// Whether the profiles of a pom that are active by default apply in a plain build: no profile of the pom is
+    /// activated on every machine.
+    private static boolean byDefault(Pom pom) {
+        return pom.profiles().stream().noneMatch(profile -> activated(profile.activation()) == Activated.YES);
+    }
+
+    /// The properties of a model as Maven merges them: from the topmost parent down, each pom's own, then those of its
+    /// active profiles, a later value replacing an earlier one.
+    ///
+    /// @param active the profiles each pom of the lineage applies
+    private static Map<String, String> properties(List<Pom> lineage, List<List<Pom.Profile>> active) {
+        Map<String, String> properties = new HashMap<>();
+        for (int i = lineage.size() - 1; i >= 0; i--) {
+            properties.putAll(lineage.get(i).properties());
+            active.get(i).forEach(profile -> properties.putAll(profile.properties()));
+        }
+        return properties;
     }
 
     /// Whether the activation conditions of a profile hold in a plain build; Maven requires all of them. A property
@@ -725,8 +804,7 @@ public final class BomResolver {
     /// property in place before it reads the managed dependencies and the coordinates, in an order that depends on the
     /// property names, so such a property gives either its own value, interpolated, or the next one. An unknown
     /// reference stays as written; a reference cycle fails, and so does a reference whose only values hold it, unless
-    /// Maven may find another value in the model or on the machine ([Elsewhere]). A profile that only some machines
-    /// activate is not applied, as everywhere in the resolution.
+    /// Maven may find another value in the model or on the machine ([Elsewhere]).
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");

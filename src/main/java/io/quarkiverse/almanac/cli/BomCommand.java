@@ -35,9 +35,11 @@ import java.util.concurrent.atomic.AtomicInteger;
         + "(read from the repository). A managed version, type or classifier with a property reference that Maven "
         + "cannot resolve either is kept as written, with a warning. A release fails where Maven fails (a parent or "
         + "imported BOM that cannot be read or has no valid coordinates, a managed dependency without a valid groupId "
-        + "and artifactId, a cycle), where Maven may resolve a reference from the machine that builds or from parts "
-        + "of the pom that are not read, and where a property that is read refers to itself with more text (Maven's "
-        + "value then depends on the order of the property names).")
+        + "and artifactId, a cycle, also one that profiles depending on the machine form), where Maven may resolve a "
+        + "reference from the machine that builds or from parts of the pom that are not read, where a profile that "
+        + "depends on the machine (JDK, OS, file) manages dependencies or sets a property that is read, or drops a "
+        + "profile active by default that does, and where a property that is read refers to itself with more text "
+        + "(Maven's value then depends on the order of the property names).")
 public final class BomCommand implements Callable<Integer> {
 
     @Mixin

@@ -313,14 +313,13 @@ class BomResolverTest {
     @Test
     void aValueThatHoldsTheReferenceItselfIsPassedOverAsMavenDoes() throws IOException {
         // the next value is the model's version here, and one that Maven may find in the model or on the machine for
-        // name and java.home; a cycle that the child overrides, or one in a profile that a plain build does not apply,
-        // is no cycle either; the result may read a bare reference to itself, which gives the next value in Maven too
+        // name and java.home; a cycle that the child overrides is no cycle either; the result may read a bare
+        // reference to itself, which gives the next value in Maven too
         Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("a=pre-${a}")));
         String bom = project(":bom:", parent("g:parent:1"),
                 properties("a=plain", "version=x-${version}", "name=${name}", "java.home=${java.home}",
                         "v2=${project.version}", "artifactId=${artifactId}"),
-                managed(dep("g:v:${project.version}"), dep("g:w:${v2}"), dep("g:x:${artifactId}")),
-                "<profiles>" + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>");
+                managed(dep("g:v:${project.version}"), dep("g:w:${v2}"), dep("g:x:${artifactId}")));
         assertEquals(Map.of("g:v", "1", "g:w", "1", "g:x", "bom"), versions(resolve(repo, bom)));
         assertEquals(Map.of("g:a", "1"), versions(resolve(BomResolver.PomSource.NONE,
                 project("g:bom:1", properties("version=${version}"), managed(dep("g:a:${version}"))))));
@@ -541,13 +540,9 @@ class BomResolverTest {
 
     @Test
     void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() {
-        // Maven reads more of the model than the coordinates, the packaging and the parent, takes properties from the
-        // machine that builds, and applies the profiles that the machine activates
-        String jdkProfile = "<profiles>" + profile("jdk8+", "<jdk>[1.8,)</jdk>", properties("foo.version=1.0"))
-                + "</profiles>";
-        Repo repo = new Repo()
-                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:a:${foo.version}")), jdkProfile))
-                .add("g:parent:1", project("g:parent:1"));
+        // Maven reads more of the model than the coordinates, the packaging and the parent, and takes properties from
+        // the machine that builds
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1"));
         String model = ", which Maven reads from the model of g:bom:1, beyond the coordinates, packaging, parent and "
                 + "properties that the resolution reads";
         String machine = ", which Maven takes from the machine that builds: a property of the JVM, of the environment "
@@ -568,14 +563,6 @@ class BomResolverTest {
         failures.put(project("g:bom:1", managed(dep("g:a:${env.HOME}"), dep("g:b::${user.home}:1"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${env.HOME}" + machine
                         + "; 1 more managed dependency keeps such a reference");
-        failures.put(project("g:bom:1", managed(dep("g:a:${foo.version}")), jdkProfile),
-                "the managed dependency g:a (declared in g:bom:1) keeps ${foo.version}, which the profile jdk8+ of "
-                        + "g:bom:1 (JDK [1.8,)) sets on the machines that activate it, a profile that the resolution "
-                        + "does not apply");
-        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
-                "the managed dependency g:a (declared in org.imp:i:1, imported through org.imp:i:1) keeps "
-                        + "${foo.version}, which the profile jdk8+ of org.imp:i:1 (JDK [1.8,)) sets on the machines "
-                        + "that activate it, a profile that the resolution does not apply");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -697,9 +684,9 @@ class BomResolverTest {
                                 managed(dep("g:fast:1")))
                         + profile("default", "<activeByDefault>true</activeByDefault>", properties("y.version=2"))
                         + profile("manual", "", managed(dep("g:manual:1")))
-                        + profile("jdk11", "<jdk>[11,)</jdk>", managed(dep("g:jdk:1")), properties("y.version=11"))
-                        + profile("java-vendor", "<property><name>!java.vendor</name></property>",
-                                managed(dep("g:vendor:1")))
+                        // depends on the machine, but changes nothing that the resolution reads
+                        + profile("jdk11", "<jdk>[11,)</jdk>", properties("compiler.release=11"))
+                        + profile("mac", "<os><family>mac</family></os>")
                         + "</profiles>");
 
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE, bom);
@@ -707,13 +694,158 @@ class BomResolverTest {
         assertEquals(Map.of("g:x", "2", "g:y", "1", "g:replaced", "2", "g:extra", "1", "g:mode", "1"),
                 versions(result));
         assertEquals(List.of("without-skip of g:bom:1", "not-fast of g:bom:1"), result.profiles());
-        assertEquals(List.of(
-                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) manages 1 "
-                        + "dependency",
-                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) sets the "
-                        + "property y.version, which the managed dependencies of g:bom:1 use",
-                "profiles that depend on the machine are not applied: profile java-vendor of g:bom:1 (property "
-                        + "!java.vendor) manages 1 dependency"), result.warnings());
+        assertEquals(List.of(), result.warnings());
+    }
+
+    @Test
+    void failsWhereAProfileThatDependsOnTheMachineChangesTheResult() {
+        // Maven applies it on the machines that activate it, and JDK [1.8,) is every machine that runs Maven
+        String jdk = "<jdk>[1.8,)</jdk>";
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", properties("x=0"),
+                        "<profiles>" + profile("jdk8+", jdk, properties("x=2")) + "</profiles>"))
+                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:a:${foo.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("foo.version=1.0")) + "</profiles>"));
+        String applies = ", and Maven applies it on the machines that activate it";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", properties("x=1"), managed(dep("g:a:${x}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("x=2")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:${foo.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("foo.version=1.0")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property foo.version, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:${x}"))),
+                "the profile jdk8+ of g:parent:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + applies);
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "the profile jdk8+ of org.imp:i:1 (JDK [1.8,)) sets the property foo.version, which the resolution of "
+                        + "org.imp:i:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:${imp.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("imp.version=1")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property imp.version, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")),
+                        "<profiles>" + profile("jdk8+", jdk, managed(dep("g:b:9"))) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) manages 1 dependency" + applies);
+        // Maven rejects this entry where the profile is active
+        failures.put(project("g:bom:1", managed(dep("g:a:2")),
+                        "<profiles>" + profile("jdk8+", jdk, managed(dep("${nope}:b:9"))) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("mac", "<os><family>mac</family></os>", managed(dep("g:b:1"), dep("g:c:1")))
+                        + "</profiles>"),
+                "the profile mac of g:bom:1 (OS) manages 2 dependencies" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:${v}")), "<profiles>"
+                        + profile("file", "<file><exists>${basedir}/x</exists></file>", properties("v=1"))
+                        + "</profiles>"),
+                "the profile file of g:bom:1 (file) sets the property v, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("java-vendor", "<property><name>!java.vendor</name></property>",
+                                managed(dep("g:vendor:1")))
+                        + "</profiles>"),
+                "the profile java-vendor of g:bom:1 (property !java.vendor) manages 1 dependency" + applies);
+        // active by default, but not in a pom where a profile is active on every machine
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("on", "<property><name>!off</name></property>", properties("y=1"))
+                        + profile("dj", "<activeByDefault>true</activeByDefault>" + jdk, properties("x=1"))
+                        + "</profiles>"),
+                "the profile dj of g:bom:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void failsWhereAProfileThatDependsOnTheMachineDropsAProfileActiveByDefaultThatChangesTheResult()
+            throws IOException {
+        // Maven applies the profiles active by default of a pom only where no other profile of the pom is activated
+        String jdk = "<jdk>[1.8,)</jdk>";
+        String byDefault = "<activeByDefault>true</activeByDefault>";
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("x=0"), "<profiles>"
+                + profile("d", byDefault, properties("x=1")) + profile("j", jdk) + "</profiles>"));
+        String drops = ", and Maven drops it on the machines that activate the profile j of ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>" + profile("d", byDefault,
+                        properties("x=1")) + profile("j", jdk, properties("unrelated=2")) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:${x}"))),
+                "the profile d of g:parent:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:parent:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>" + profile("d", byDefault,
+                        managed(dep("g:only-default:5"))) + profile("j", jdk) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, manages 1 dependency" + drops + "g:bom:1 (JDK [1.8,))");
+        // a profile active by default with a JDK condition is activated by it, and drops the other one
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}-${y}")), "<profiles>"
+                        + profile("j", byDefault + jdk, properties("x=j")) + profile("d", byDefault, properties("y=d"))
+                        + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property y, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+
+        // alone, that one applies on every machine, whether its condition holds or not
+        assertEquals(Map.of("g:a", "j"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:${x}")),
+                "<profiles>" + profile("j", byDefault + "<jdk>[99,)</jdk>", properties("x=j")) + "</profiles>"))));
+        // and a profile active by default that changes nothing the resolution reads may be dropped
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:1")),
+                "<profiles>" + profile("d", byDefault, properties("unused=1")) + profile("j", jdk) + "</profiles>"))));
+    }
+
+    @Test
+    void failsOnAPropertyCycleThatProfilesDependingOnTheMachineForm() throws IOException {
+        // Maven interpolates every property of the model on the machines that activate them too, where also two of
+        // them may form one, or one may drop a profile active by default that replaces a property of a cycle
+        String byDefault = "<activeByDefault>true</activeByDefault>";
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1",
+                "<profiles>" + profile("j8", "<jdk>[1.8,)</jdk>", properties("c1=${c2}")) + "</profiles>"));
+        String cycle = "g:bom:1: the property references form a cycle: ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("j", "<jdk>[1.8,)</jdk>", properties("c1=${c2}", "c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile j of g:bom:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>"),
+                cycle + "b -> b, on the machines that activate the profile jdk99 of g:bom:1 (JDK [99,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("j8", "<jdk>[1.8,)</jdk>", properties("c1=${c2}"))
+                        + profile("j11", "<jdk>[11,)</jdk>", properties("c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile j8 of g:bom:1 (JDK [1.8,)) and the "
+                        + "profile j11 of g:bom:1 (JDK [11,))");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:1")), "<profiles>"
+                        + profile("unix", "<os><family>unix</family></os>", properties("c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile unix of g:bom:1 (OS) and the "
+                        + "profile j8 of g:parent:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", properties("x=${y}", "y=${x}"), managed(dep("g:a:1")), "<profiles>"
+                        + profile("d", byDefault, properties("y=plain")) + profile("j", "<jdk>[1.8,)</jdk>")
+                        + "</profiles>"),
+                cycle + "y -> x -> y, on the machines that activate the profile j of g:bom:1 (JDK [1.8,))");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+
+        // more than ten such profiles are too many combinations to try
+        StringBuilder many = new StringBuilder("<profiles>");
+        for (int i = 1; i <= 11; i++) {
+            many.append(profile("jdk" + i, "<jdk>[" + i + ",)</jdk>", properties("p" + i + "=${q}")));
+        }
+        String tooMany = assertThrows(IOException.class, () -> resolve(repo, project("g:bom:1",
+                managed(dep("g:a:1")), many + "</profiles>"))).getMessage();
+        assertTrue(tooMany.startsWith("g:bom:1: 11 profiles that depend on the machine could add a property reference "
+                + "cycle, too many to try each combination: profile jdk1 of g:bom:1 (JDK [1,)), "), tooMany);
+        StringBuilder ten = new StringBuilder("<profiles>");
+        for (int i = 1; i <= 10; i++) {
+            ten.append(profile("jdk" + i, "<jdk>[" + i + ",)</jdk>", properties("p" + i + "=${q}")));
+        }
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:1")),
+                ten + "</profiles>"))));
+
+        // values with references that form no cycle in any combination
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", properties("b=1", "x=${b}"),
+                managed(dep("g:a:1")), "<profiles>" + profile("j8", "<jdk>[1.8,)</jdk>", properties("c=${b}"))
+                        + profile("j11", "<jdk>[11,)</jdk>", properties("b=2", "d=${c}")) + "</profiles>"))));
     }
 
     @Test
