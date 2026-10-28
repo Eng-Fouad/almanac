@@ -31,10 +31,10 @@ import java.util.regex.Pattern;
 ///    property condition holds when it asks for a property to be absent (`!name`, or a `!value`), and
 ///    `activeByDefault` profiles count when no other profile of the pom is active. Their properties and managed
 ///    dependencies override the pom's own. A profile whose activation depends on the machine (JDK, OS, file, or a
-///    property the JVM or the environment provides) is not applied. The resolution fails where such a profile could
-///    change the result: when it manages dependencies or sets a property the resolution reads, and when it is in a pom
-///    whose `activeByDefault` profiles apply and one of these does, as Maven drops them on the machines that activate
-///    it.
+///    property that the JVM, the environment or the `mvn` launcher provides: [#MACHINE_PROPERTIES], [#MACHINE_NAMES])
+///    is not applied. The resolution fails where such a profile could change the result: when it manages dependencies
+///    or sets a property the resolution reads, and when it is in a pom whose `activeByDefault` profiles apply and one
+///    of these does, as Maven drops them on the machines that activate it.
 /// 2. **Inheritance.** The pom and its parents, read from the repository. A pom's groupId and version default to its
 ///    parent's; properties merge, the child's value winning; managed dependencies merge by management key
 ///    (`groupId:artifactId:type:classifier`): a pom's own entries, then its parents' entries of other keys.
@@ -79,8 +79,9 @@ import java.util.regex.Pattern;
 ///   packaging is not `pom`, a pom without groupId, a system scope entry without systemPath, dependencies (not managed
 ///   ones) without a valid id or version, modules in a pom whose packaging is not `pom`.
 /// - It writes another value: a property named `packaging` gives its value, where Maven takes the model's packaging;
-///   and a reference that no pom defines stays as written, where Maven also reads an environment variable of that
-///   name (`${HOME}`).
+///   a reference that no pom defines stays as written, where Maven also reads an environment variable of that name
+///   (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and [#MACHINE_NAMES], as
+///   another vendor's JVM or another launcher than `mvn` may, counts as absent, in a reference and in an activation.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -215,7 +216,8 @@ public final class BomResolver {
         /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets), or what a getter
         /// gives of the model or of a text element: `${class}`, `${version.empty}`.
         MODEL,
-        /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`.
+        /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`,
+        /// `${native.encoding}`, `${classworlds.conf}`.
         MACHINE,
         /// A property that a profile depending on the machine sets.
         PROFILE
@@ -252,6 +254,13 @@ public final class BomResolver {
     /// Properties the JVM, the operating system environment or Maven itself provide, which a plain build has.
     private static final List<String> MACHINE_PROPERTIES = List.of("env.", "java.", "jdk.", "os.", "user.", "file.",
             "line.", "path.", "sun.", "maven.");
+    /// Properties outside [#MACHINE_PROPERTIES] that the JDK sets on some machines (its encodings since JDK 17, the
+    /// proxy settings it takes from macOS, the toolkit of JDKs before 13) and that the `mvn` launcher sets.
+    private static final Set<String> MACHINE_NAMES = Set.of("native.encoding", "stdout.encoding", "stderr.encoding",
+            "stdin.encoding", "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "ftp.proxyHost",
+            "ftp.proxyPort", "socksProxyHost", "socksProxyPort", "http.nonProxyHosts", "ftp.nonProxyHosts",
+            "socksNonProxyHosts", "gopherProxySet", "gopherProxyHost", "gopherProxyPort", "awt.toolkit",
+            "classworlds.conf", "library.jansi.path");
     /// The most profiles depending on the machine that could add a property cycle whose every combination is tried.
     private static final int MOST_VARYING_PROFILES = 10;
 
@@ -599,7 +608,7 @@ public final class BomResolver {
     /// does not know; null when Maven keeps such a reference as written in every plain build. Maven reads the model
     /// along the reference's path, with or without the `project.` or `pom.` prefix ([#byName]), also through a getter:
     /// of a text element's String, `${version.empty}` (while `${version.jdk-misc}` reads nothing), or of the model,
-    /// `${class}`; and an unprefixed reference also among the properties of the machine.
+    /// `${class}`; and an unprefixed reference also among the properties of the machine, [#MACHINE_NAMES] included.
     ///
     /// @param parent     whether the model has a parent
     /// @param machineSet the properties that profiles depending on the machine set
@@ -615,6 +624,9 @@ public final class BomResolver {
                 && STRING_GETTERS.contains(parts[1])) {
             return Elsewhere.MODEL;
         }
+        if (path.equals(name) && MACHINE_NAMES.contains(name)) {
+            return Elsewhere.MACHINE;
+        }
         return machineSet.contains(name) ? Elsewhere.PROFILE : null;
     }
 
@@ -622,7 +634,8 @@ public final class BomResolver {
     /// of the reference that it knows holds the reference itself: an element of the model that the name names, a text
     /// element as a whole (`${name}`) or one with parts along a path (`${build.finalName}`), or a property of the
     /// machine ([#MACHINE_PROPERTIES]); null otherwise, also where only a getter would give a value (`${class}`,
-    /// `${version.empty}`), which Maven finds on some models only (not `${name.empty}` without `<name>`).
+    /// `${version.empty}`), which Maven finds on some models only (not `${name.empty}` without `<name>`), and for
+    /// [#MACHINE_NAMES], which some machines lack (`${native.encoding}` before JDK 17).
     ///
     /// @param parent whether the model has a parent
     private static Elsewhere byName(String name, boolean parent) {
@@ -685,7 +698,7 @@ public final class BomResolver {
             if (property.isEmpty()) {
                 return Activated.NO;
             }
-            if (MACHINE_PROPERTIES.stream().anyMatch(property::startsWith)) {
+            if (machineProperty(property)) {
                 machine = true;
             } else {
                 String value = activation.propertyValue();
@@ -699,6 +712,11 @@ public final class BomResolver {
             }
         }
         return machine ? Activated.DEPENDS_ON_THE_MACHINE : Activated.NO;
+    }
+
+    /// Whether the machine that builds may provide the property: one of [#MACHINE_PROPERTIES] or [#MACHINE_NAMES].
+    private static boolean machineProperty(String property) {
+        return MACHINE_PROPERTIES.stream().anyMatch(property::startsWith) || MACHINE_NAMES.contains(property);
     }
 
     /// `profile <id> of <pom> (<conditions>)`, for a profile that depends on the machine.

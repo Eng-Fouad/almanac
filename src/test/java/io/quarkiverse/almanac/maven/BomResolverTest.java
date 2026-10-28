@@ -306,6 +306,9 @@ class BomResolverTest {
                 "g:bom:1: the property references form a cycle: a -> a");
         failures.put(project("g:bom:1", managed(dep("g:x:${unknown}"), bomImport("org.imp:i:1"))),
                 "org.imp:i:1: the property references form a cycle: q -> p -> q");
+        // JDKs before 17 have no native.encoding to give it a value
+        failures.put(project("g:bom:1", properties("native.encoding=${native.encoding}"), managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: native.encoding -> native.encoding");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -601,6 +604,15 @@ class BomResolverTest {
         failures.put(project("g:bom:1", managed(dep("g:a:${env.HOME}"), dep("g:b::${user.home}:1"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${env.HOME}" + machine
                         + "; 1 more managed dependency keeps such a reference");
+        // also a property that the JDK sets outside those prefixes, or that the mvn launcher sets
+        for (String reference : List.of("${native.encoding}", "${classworlds.conf}", "${library.jansi.path}",
+                "${http.nonProxyHosts}")) {
+            failures.put(project("g:bom:1", managed(dep("g:a:" + reference))),
+                    "the managed dependency g:a (declared in g:bom:1) keeps " + reference + machine);
+        }
+        failures.put(project("g:bom:1", managed(dep("g:a::${stdout.encoding}:1"))),
+                "the managed dependency g:a:${stdout.encoding} (declared in g:bom:1) keeps ${stdout.encoding}"
+                        + machine);
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -811,6 +823,32 @@ class BomResolverTest {
                                 managed(dep("g:vendor:1")))
                         + "</profiles>"),
                 "the profile java-vendor of g:bom:1 (property !java.vendor) manages 1 dependency" + applies);
+        // also by a property that the JDK sets outside those prefixes, or that the mvn launcher sets
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("enc", "<property><name>native.encoding</name></property>", managed(dep("g:enc:1")))
+                        + "</profiles>"),
+                "the profile enc of g:bom:1 (property native.encoding) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=new"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("old-jdk", "<property><name>!native.encoding</name></property>", properties("x=old"))
+                        + "</profiles>"),
+                "the profile old-jdk of g:bom:1 (property !native.encoding) sets the property x, which the resolution "
+                        + "of g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", properties("cls=base"), managed(dep("g:a::${cls}:1")), "<profiles>"
+                        + profile("new", "<property><name>stdout.encoding</name></property>", properties("cls=new"))
+                        + "</profiles>"),
+                "the profile new of g:bom:1 (property stdout.encoding) sets the property cls, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("embedded", "<property><name>!classworlds.conf</name></property>",
+                                managed(dep("g:only-embedded:1")))
+                        + "</profiles>"),
+                "the profile embedded of g:bom:1 (property !classworlds.conf) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=cli"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("no-jansi", "<property><name>!library.jansi.path</name></property>",
+                                properties("x=embedded"))
+                        + "</profiles>"),
+                "the profile no-jansi of g:bom:1 (property !library.jansi.path) sets the property x, which the "
+                        + "resolution of g:bom:1 reads" + applies);
         // active by default, but not in a pom where a profile is active on every machine
         failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>"
                         + profile("on", "<property><name>!off</name></property>", properties("y=1"))
@@ -842,6 +880,13 @@ class BomResolverTest {
         failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>" + profile("d", byDefault,
                         managed(dep("g:only-default:5"))) + profile("j", jdk) + "</profiles>"),
                 "the profile d of g:bom:1, active by default, manages 1 dependency" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", properties("x=0"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("d", byDefault, properties("x=1"))
+                        + profile("enc", "<property><name>native.encoding</name></property>",
+                                properties("unrelated=1")) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads, and Maven drops it on the machines that activate the profile enc of g:bom:1 "
+                        + "(property native.encoding)");
         // a profile active by default with a JDK condition is activated by it, and drops the other one
         failures.put(project("g:bom:1", managed(dep("g:a:${x}-${y}")), "<profiles>"
                         + profile("j", byDefault + jdk, properties("x=j")) + profile("d", byDefault, properties("y=d"))
