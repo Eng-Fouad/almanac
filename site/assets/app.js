@@ -21,6 +21,8 @@ const LIST_CAP = 30; // rows in simple lists before "show all"
 const FILTER_DEBOUNCE = 160;
 const SEARCH_DEBOUNCE = 110;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+/** quarkus.io's logo for dark backgrounds, as its own navigation bar shows it. */
+const QUARKUS_LOGO = 'https://quarkus.io/assets/images/quarkus_logo_horizontal_rgb_reverse.svg';
 
 const KIND_LABEL = {
   added: 'added', removed: 'removed', changed: 'changed', default: 'default', type: 'type', phase: 'phase',
@@ -58,8 +60,42 @@ const ICONS = {
   chevron: 'M4.5 6l3.5 3.5L11.5 6',
   external: 'M9.5 2.5h4v4M13.5 2.5L7.5 8.5M11.5 9v4.5h-9v-9H7',
   theme: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 2v12',
-  ledger: 'M2.5 2.5h11v11h-11zM2.5 6h11M2.5 9.5h11M6 6v7.5',
+  globe: 'M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM1.5 8h13M8 1.5c1.8 1.9 2.7 4.1 2.7 6.5S9.8 12.6 8 14.5M8 1.5C6.2 3.4 5.3 5.6 5.3 8s.9 4.6 2.7 6.5',
+  menu: 'M2.5 4.5h11M2.5 8h11M2.5 11.5h11',
 };
+
+/**
+ * quarkus.io's main menu, as its own navigation bar has it (the extensions site, quarkus.io/extensions, keeps such a
+ * copy too). An entry is [label, link, current]: a path is on quarkus.io; the almanac is listed under Learn, next to
+ * the release notes.
+ */
+const QUARKUS_IO = 'https://quarkus.io';
+const QUARKUS_MENU = [
+  { title: 'Why', groups: [
+    { items: [['What is Quarkus?', '/about'], ['Developer Joy', '/developer-joy'], ['Performance', '/performance'],
+      ['Kubernetes Native', '/kubernetes-native'], ['Standards', '/standards'], ['Versatility', '/versatility'],
+      ['Container First', '/container-first']] },
+    { title: 'Using Spring?', items: [['Spring Overview', '/spring'], ['Migrate to Quarkus', '/spring/migrate/']] },
+    { title: 'AI', items: [['AI Overview', '/ai'], ['Java for AI', '/java-for-ai'], ['Why Quarkus for AI', '/quarkus-for-ai'],
+      ['AI Blueprints', '/ai-blueprints']] },
+  ] },
+  { title: 'Learn', groups: [
+    { items: [['Get Started', '/get-started'], ['Documentation', '/guides'], ['Releases', '/releases/'],
+      ['Release Almanac', '#/', true], ['User Stories', '/userstories/'], ['"Q" Tip Videos', '/qtips'], ['Books', '/books'],
+      ['Workshops', '/workshops']] },
+  ] },
+  { title: 'Extensions', groups: [
+    { items: [['Browse Extensions', '/extensions/'], ['Use Extensions', '/faq/#what-is-a-quarkus-extension'],
+      ['Create Extensions', '/guides/writing-extensions'], ['Share Extensions', 'https://hub.quarkiverse.io']] },
+  ] },
+  { title: 'Community', groups: [
+    { items: [['Support', '/support/'], ['Blog', '/blog'], ['Discussion', '/discussion'], ['Working Groups', '/working-groups'],
+      ['Podcast', '/insights'], ['Events', '/events'], ['Newsletter', '/newsletter'],
+      ['Roadmap', 'https://github.com/orgs/quarkusio/projects/13/views/1'], ['Benefactors', '/benefactors']] },
+  ] },
+];
+const QUARKUS_LANGUAGES = [['Official (English)', 'https://quarkus.io/'], ['Português (BR)', 'https://pt.quarkus.io/'],
+  ['Español', 'https://es.quarkus.io/'], ['简体中文', 'https://cn.quarkus.io/'], ['日本語', 'https://ja.quarkus.io/']];
 
 /* ========================================================================== */
 /* Small DOM helpers                                                           */
@@ -591,17 +627,82 @@ function buildShell() {
   shell.notice = h('div', { class: 'notice', role: 'note', hidden: true });
   shell.footData = h('p', { class: 'foot-data' });
   shell.live = h('div', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
+  // quarkus.io's navigation bar, then the almanac's own bar
   const header = h('header', { class: 'mast' },
-    h('div', { class: 'wrap mast-in' },
-      h('a', { class: 'brand', href: '#/' }, icon('ledger', 'brand-mark'), h('span', { class: 'brand-name' }, 'Quarkus Almanac')),
-      h('nav', { class: 'mast-nav', 'aria-label': 'Main' }, shell.navHome, shell.navVersions),
-      shell.searchWrap,
-      themeToggle()));
+    globalNav(),
+    h('div', { class: 'lbar' },
+      h('div', { class: 'wrap lbar-in' },
+        h('a', { class: 'lbar-name', href: '#/' }, 'Almanac'),
+        h('nav', { class: 'mast-nav', 'aria-label': 'Almanac' }, shell.navHome, shell.navVersions),
+        shell.searchWrap)));
   const footer = h('footer', { class: 'foot' },
     h('div', { class: 'wrap foot-in' },
       h('p', null, 'Unofficial community project, not affiliated with the Quarkus project. Data extracted from artifacts published on Maven Central.'),
       shell.footData));
   app.replaceChildren(skip, header, shell.notice, shell.main, footer, shell.live);
+}
+
+/**
+ * quarkus.io's navigation bar: the logo, the main menu (a disclosure button per menu; pointer devices also open one on
+ * hover), Start Coding, the languages and the theme. Below 960 px the menu folds behind one button. Escape closes the
+ * open menu and returns to its button; a click elsewhere closes it.
+ */
+function globalNav() {
+  const menus = [];
+  const isOpen = (li) => li.classList.contains('is-open');
+  const setOpen = (li, open) => {
+    li.classList.toggle('is-open', open);
+    li.querySelector(':scope > .gnav-btn').setAttribute('aria-expanded', String(open));
+  };
+  const closeAll = (except) => {
+    for (const li of menus) if (li !== except && isOpen(li)) setOpen(li, false);
+  };
+  const link = (href) => (href.startsWith('/') ? QUARKUS_IO + href : href);
+  const menu = (id, label, groups) => {
+    const btn = h('button', { type: 'button', class: 'gnav-btn', 'aria-expanded': 'false', 'aria-controls': `gnav-${id}` },
+      label, icon('chevron', 'gnav-chev'));
+    const panel = h('div', { class: 'gnav-menu', id: `gnav-${id}` },
+      groups.map((g) => frag(
+        g.title ? h('p', { class: 'gnav-group' }, g.title) : null,
+        h('ul', null, g.items.map(([text, href, current]) =>
+          h('li', null, h('a', { href: link(href), 'aria-current': current ? 'page' : null }, text)))))));
+    const li = h('li', { class: 'gnav-item' }, btn, panel);
+    btn.addEventListener('click', () => {
+      const open = !isOpen(li);
+      closeAll(li);
+      setOpen(li, open);
+    });
+    menus.push(li);
+    return li;
+  };
+  const list = h('ul', { class: 'gnav', id: 'gnav-list' },
+    QUARKUS_MENU.map((m) => menu(m.title.toLowerCase(), m.title, m.groups)),
+    h('li', { class: 'gnav-cta-item' }, h('a', { class: 'gnav-cta', href: 'https://code.quarkus.io/' }, 'Start Coding')),
+    menu('languages', frag(icon('globe', 'gnav-globe'), h('span', { class: 'sr-only' }, 'Languages')),
+      [{ items: QUARKUS_LANGUAGES }]));
+  const burger = h('button', { type: 'button', class: 'gnav-burger', 'aria-expanded': 'false', 'aria-controls': 'gnav-list' },
+    icon('menu'), h('span', { class: 'sr-only' }, 'Quarkus menu'));
+  const bar = h('nav', { class: 'gbar', 'aria-label': 'Quarkus' },
+    h('div', { class: 'wrap gbar-in' },
+      h('a', { class: 'brand-logo', href: `${QUARKUS_IO}/` }, h('img', { src: QUARKUS_LOGO, alt: 'Quarkus', width: '197', height: '30' })),
+      burger, list, themeToggle()));
+  burger.addEventListener('click', () => {
+    const open = !bar.classList.contains('is-open');
+    bar.classList.toggle('is-open', open);
+    burger.setAttribute('aria-expanded', String(open));
+    if (!open) closeAll();
+  });
+  document.addEventListener('click', (e) => {
+    if (!bar.contains(e.target)) closeAll();
+  });
+  document.addEventListener('keydown', (e) => {
+    const open = menus.find(isOpen);
+    if (e.key === 'Escape' && open) {
+      setOpen(open, false);
+      open.querySelector(':scope > .gnav-btn').focus();
+    }
+  });
+  return bar;
 }
 
 function updateNav(r) {
@@ -1215,7 +1316,7 @@ async function renderHome() {
   const first = V.list[0];
   const last = V.list[V.list.length - 1];
 
-  const hero = h('section', { class: 'hero', 'aria-labelledby': 'home-title' },
+  const hero = h('section', { class: 'hero band', 'aria-labelledby': 'home-title' },
     h('p', { class: 'kicker' }, 'Release almanac · Quarkus ', h('span', { class: 'ver' }, short(first.v)), ' to ', h('span', { class: 'ver' }, short(last.v))),
     h('h1', { class: 'display', id: 'home-title', tabindex: '-1' }, 'What changed between Quarkus releases?'),
     h('p', { class: 'lede' },
@@ -1235,7 +1336,8 @@ async function renderHome() {
     picks.length ? h('ol', { class: 'quick-list' }, picks.map(quickPickItem)) : emptyNote('Not enough releases for quick comparisons.'));
 
   return frag(
-    h('div', { class: 'home-grid' }, h('div', { class: 'home-main' }, hero, search), h('aside', { class: 'home-side', 'aria-label': 'Quick comparisons' }, quick)),
+    hero,
+    h('div', { class: 'home-grid' }, h('div', { class: 'home-main' }, search), h('aside', { class: 'home-side', 'aria-label': 'Quick comparisons' }, quick)),
     coverageFacts());
 }
 
@@ -1416,7 +1518,7 @@ function compareHeader(cmp) {
   const dir = core.compareVersions(A.v, B.v);
   const side = (label, x) => h('div', { class: 'cmp-side' },
     h('span', { class: 'cmp-side-k' }, label), verLink(x.v), dateEl(x.date), versionChips(x));
-  return h('header', { class: 'cmp-head' },
+  return h('header', { class: 'cmp-head band' },
     h('p', { class: 'kicker' }, 'Comparison'),
     h('h1', { class: 'cmp-title', tabindex: '-1' },
       h('span', { class: 'ver' }, short(A.v)),
@@ -2022,7 +2124,7 @@ async function renderProperty(r) {
 
   const nameEl = h('span', { class: 'prop-name' }, name);
   return frag(
-    h('header', { class: 'page-head' },
+    h('header', { class: 'page-head band' },
       h('p', { class: 'kicker' }, 'Config property', s.e ? frag(' · ', h('a', { href: link.extension(s.e) }, s.e)) : null),
       h('h1', { class: 'page-title page-title--mono', tabindex: '-1' }, nameEl, copyButton(name, { label: 'Copy property name', target: nameEl })),
       h('div', { class: 'badges' },
@@ -2151,7 +2253,7 @@ async function renderArtifact(r) {
     }
   }
   return frag(
-    h('header', { class: 'page-head' },
+    h('header', { class: 'page-head band' },
       h('p', { class: 'kicker' }, extEntry ? 'Quarkus extension · managed dependency' : 'Managed dependency', ' · ', group),
       h('h1', { class: 'page-title page-title--mono', tabindex: '-1' }, idEl, copyButton(id, { label: 'Copy coordinates', target: idEl }))),
     status,
@@ -2310,7 +2412,7 @@ async function renderVersions() {
   const preSnapshots = V.configVis.some((c) => V.visOff.pre[c]);
   const extOnly = V.extVis.some((e) => !V.list[e].config);
   return frag(
-    h('header', { class: 'page-head' },
+    h('header', { class: 'page-head band' },
       h('p', { class: 'kicker' }, 'Releases'),
       h('h1', { class: 'page-title', tabindex: '-1' }, 'All releases'),
       h('p', { class: 'lede' }, `${plural(vis.indices.length, 'release')} in ${plural(V.streams.length, 'stream')}, newest first`,
@@ -2418,7 +2520,7 @@ async function renderVersion(r) {
   }
 
   return frag(
-    h('header', { class: 'page-head' },
+    h('header', { class: 'page-head band' },
       h('p', { class: 'kicker' }, isPre ? 'Pre-release' : 'Release', ' · stream ', x.stream || core.stream(x.v)),
       h('h1', { class: 'page-title page-title--ver', tabindex: '-1' }, short(x.v)),
       h('div', { class: 'badges' }, dateEl(x.date), versionChips(x), V.visOff.upcoming[i] ? upcomingChip() : null,
