@@ -43,9 +43,9 @@ java -jar target/quarkus-almanac.jar assemble --offline --pre-releases all
 Then commit `dataset/` and `site/data/`. `all` runs the whole pipeline for the releases the dataset does not have yet,
 and `--help` lists every command and option.
 
-Downloads are polite: one request at a time, with a random 1–3 s pause between requests (`--pause`), shared by every
+Downloads are polite: one request at a time, with a random 0.5–1.5 s pause between requests (`--pause`), shared by every
 command that uses the same `work/` folder, and they stop at the first HTTP 403. An uncached release costs about
-800 requests, roughly 30 minutes; a release already in the dataset costs nothing.
+800 requests, roughly 20 minutes; a release already in the dataset costs nothing.
 
 ## Limitations
 

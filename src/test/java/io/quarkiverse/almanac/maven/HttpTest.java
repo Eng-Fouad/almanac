@@ -524,14 +524,14 @@ class HttpTest {
     }
 
     @Test
-    void mavenCentralNeedsAPauseOfAtLeastOneSecond() throws IOException {
+    void mavenCentralNeedsAPauseOfAtLeastHalfASecond() throws IOException {
         URI central = URI.create("https://repo1.maven.org/maven2/");
-        for (String pause : List.of("0", "0-0.5", "0.5-2", "0.999", "0.999-5")) {
+        for (String pause : List.of("0", "0-0.4", "0.4-2", "0.499", "0.499-5")) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> Http.checkPause(Pacer.Pause.parse(pause), central));
-            assertTrue(refused.getMessage().contains("at least 1 s"), refused.getMessage());
+            assertTrue(refused.getMessage().contains("at least 0.5 s"), refused.getMessage());
         }
-        Http.checkPause(Pacer.Pause.parse("1"), central);
+        Http.checkPause(Pacer.Pause.parse("0.5"), central);
         Http.checkPause(Pacer.Pause.DEFAULT, URI.create("https://repo.maven.apache.org/maven2"));
         assertThrows(IllegalArgumentException.class,
                 () -> Http.checkPause(Pacer.Pause.NONE, URI.create("https://REPO.maven.apache.org/maven2/")));
@@ -565,7 +565,7 @@ class HttpTest {
         // reaches Maven Central, whatever the client does
         Files.createDirectories(lockFile());
         URI central = URI.create("https://repo1.maven.org/maven2/io/quarkus/quarkus-bom/maven-metadata.xml");
-        try (Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.5"), lockFile()), FAST)) {
+        try (Http http = new Http(1, false, Pacer.shared(Pacer.Pause.parse("0.4"), lockFile()), FAST)) {
             Http.StoppedException stopped = assertThrows(Http.StoppedException.class, () -> http.get(central));
             assertTrue(stopped.getMessage().contains("is too short for Maven Central"), stopped.getMessage());
             assertTrue(http.stopped());
