@@ -20,7 +20,6 @@ import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Supplier;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,16 +31,19 @@ import java.util.regex.Pattern;
 ///    property condition holds when it asks for a property to be absent (`!name`, or a `!value`), and
 ///    `activeByDefault` profiles count when no other profile of the pom is active. Their properties and managed
 ///    dependencies override the pom's own. A profile whose activation depends on the machine (JDK, OS, file, or a
-///    property the JVM or the environment provides) is not applied; a warning names it when it manages dependencies or
-///    sets a property the resolution reads.
+///    property that the JVM, the environment, the `mvn` launcher or Maven itself provides: [#MACHINE_PROPERTIES],
+///    [#MACHINE_NAMES]) is not applied. The resolution fails where such a profile could change the result: when it
+///    manages dependencies or sets a property the resolution reads, and when it is in a pom whose `activeByDefault`
+///    profiles apply and one of these does, as Maven drops them on the machines that activate it.
 /// 2. **Inheritance.** The pom and its parents, read from the repository. A pom's groupId and version default to its
 ///    parent's; properties merge, the child's value winning; managed dependencies merge by management key
 ///    (`groupId:artifactId:type:classifier`): a pom's own entries, then its parents' entries of other keys.
 /// 3. **Interpolation** of the merged model, so inherited entries see the child's values: `${project.groupId}`,
 ///    `${project.artifactId}`, `${project.version}`, `${project.packaging}` and `${project.parent.groupId}`,
 ///    `${project.parent.artifactId}`, `${project.parent.version}` (also with the legacy `pom.` prefix, or unprefixed
-///    after the properties), then the properties, resolved recursively; like Maven, a value that holds the reference
-///    itself is passed over for the next one. An unknown reference stays as written.
+///    after the properties, except `${packaging}`: [#BUILD_PACKAGING]), then the properties, resolved recursively;
+///    like Maven, a value that holds the reference itself is passed over for the next one. An unknown reference stays
+///    as written.
 /// 4. **Imports.** The `<type>pom</type><scope>import</scope>` entries, in declaration order (a pom's own before its
 ///    parents'), are replaced by the effective dependency management of the imported BOM, built the same way in the
 ///    imported BOM's own context, for the keys not managed yet: a pom's own and inherited entries beat imported ones,
@@ -52,13 +54,42 @@ import java.util.regex.Pattern;
 /// entries with the same id the first counts.
 ///
 /// Where Maven fails to build the model, so does the resolution: parent, import and property reference cycles (also a
-/// property cycle that no managed dependency reads, since Maven interpolates every property of the model), and a
-/// managed dependency without a valid groupId and artifactId (Maven's validation of the model). A reference that no
-/// pom defines stays as written in a managed dependency's version, type or classifier, as in Maven's effective model:
-/// [Result#unresolved()] lists the entries that keep one, and [Result#describeUnresolved()] says where they come from.
-/// The resolution fails instead where Maven may give such a reference a value that it does not know ([Elsewhere]),
-/// and where a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not
-/// tell from the placeholder.
+/// property cycle that no managed dependency reads, since Maven interpolates every property of the model, and one that
+/// only the profiles a machine activates form), and a managed dependency without a valid groupId and artifactId
+/// (Maven's validation of the model). A reference that no pom defines stays as written in a managed dependency's
+/// version, type or classifier, as in Maven's effective model: [Result#unresolved()] lists the entries that keep one,
+/// and [Result#describeUnresolved()] says where they come from. The resolution fails instead where Maven may give such
+/// a reference a value that it does not know ([Elsewhere]), there or in a scope, which decides whether an entry is an
+/// import; where the result reads a property that refers to itself with more text (`version` = `x-${version}`), which
+/// Maven interpolates in place in an order that depends on the property names, so that it may read either value; and
+/// where a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell
+/// from the placeholder.
+///
+/// Known differences from Maven:
+/// - The resolution fails where Maven may build: for a part of the model or a property of the machine that Maven
+///   keeps as written after all (`${build.version}`, `${name}` without `<name>`, `${os.detected.classifier}`); for a
+///   profile that depends on the machine and could change the result or form a cycle, whichever machines activate it
+///   (none for JDK `[99,)`, every one for JDK `[1.8,)`) and also where a child replaces what it sets, and for a cycle
+///   that several such profiles form which no machine activates together; for `${packaging}` and a profile activated
+///   by `packaging`, which Maven gives the packaging of the project it builds ([#BUILD_PACKAGING]), also where that is
+///   the BOM; for a property that refers to itself with more text, also where Maven's order gives the value the
+///   resolution would; and, taken for a cycle, for a property named after a model value that reads it (`version` =
+///   `${project.version}`, read as `${version}`) and for an unused property that refers to itself where only a getter
+///   gives Maven a value (`class` = `${class}`, `version.empty` = `${version.empty}`) or only some machines or the
+///   `mvn` launcher do (`native.encoding` = `${native.encoding}`, `classworlds.conf` = `${classworlds.conf}`).
+/// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}` or `x-${X}`), named after
+///   a model element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
+///   without `<name>`); for a model element that refers to itself or reaches itself through properties, which the
+///   resolution does not interpolate (`<url>${url}</url>`, `<packaging>${packaging}</packaging>`, `<name>${a}</name>`
+///   with `a` = `${project.name}`); and where Maven's validation of the model rejects what the resolution does not
+///   check, such as a pom without modelVersion, a pom without groupId or version, with an invalid groupId or an empty
+///   packaging, a parent whose packaging is not `pom`, a system scope entry without systemPath or a systemPath without
+///   system scope, dependencies (not managed ones) without a valid id or version, and modules in a pom whose packaging
+///   is not `pom`.
+/// - It writes another value: a reference that no pom defines stays as written, where Maven also reads an environment
+///   variable of that name (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and
+///   [#MACHINE_NAMES], as another vendor's JVM or another launcher than `mvn` may, counts as absent, in a reference and
+///   in an activation.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -190,9 +221,11 @@ public final class BomResolver {
     /// not know: Maven keeps such a reference as written only on some machines, or not at all.
     private enum Elsewhere {
         /// An element of the model other than the coordinates, the packaging and the parent's coordinates, such as
-        /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets).
+        /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets), or what a getter
+        /// gives of the model or of a text element: `${class}`, `${version.empty}`.
         MODEL,
-        /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`.
+        /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`,
+        /// `${native.encoding}`, `${classworlds.conf}`.
         MACHINE,
         /// A property that a profile depending on the machine sets.
         PROFILE
@@ -201,6 +234,10 @@ public final class BomResolver {
     /// The text elements of Maven's model that the resolution does not read, which a reference reads as a whole.
     private static final Set<String> MODEL_TEXT = Set.of("childProjectUrlInheritAppendPath", "description", "id",
             "inceptionYear", "modelEncoding", "modelVersion", "name", "url");
+    /// The text elements of Maven's model that the resolution reads.
+    private static final Set<String> COORDINATES = Set.of("groupId", "artifactId", "version", "packaging");
+    /// What a reference reads of a text element's String after a dot, as in `${version.empty}`: its getters.
+    private static final Set<String> STRING_GETTERS = Set.of("blank", "bytes", "class", "empty");
     /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`.
     private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "contributors", "dependencies",
             "dependencyManagement", "developers", "distributionManagement", "issueManagement", "licenses",
@@ -215,9 +252,8 @@ public final class BomResolver {
     /// @param imports     the BOMs it imports, directly or not, in resolution order
     /// @param poms        the poms read to build it, its own included
     /// @param profiles    the profiles applied to it that matter, its imports' included
-    /// @param warnings    what was ignored
     private record Model(String coordinates, List<Managed> managed, List<String> parents, List<String> imports,
-                         Set<String> poms, List<String> profiles, List<String> warnings) {
+                         Set<String> poms, List<String> profiles) {
     }
 
     /// Whether Maven activates a profile through its `<activation>` conditions in a plain build.
@@ -226,6 +262,21 @@ public final class BomResolver {
     /// Properties the JVM, the operating system environment or Maven itself provide, which a plain build has.
     private static final List<String> MACHINE_PROPERTIES = List.of("env.", "java.", "jdk.", "os.", "user.", "file.",
             "line.", "path.", "sun.", "maven.");
+    /// The property that Maven 3.9 sets to the packaging of the project it builds, for profile activation and, before
+    /// the model's own properties and packaging, for interpolation: in a build that imports the BOM, that project's
+    /// packaging, also in the BOM, its parents and its imports. The cycle pass reads it as the BOM's own packaging, as
+    /// in a build of the BOM itself.
+    private static final String BUILD_PACKAGING = "packaging";
+    /// Properties outside [#MACHINE_PROPERTIES] that the JDK sets on some machines (its encodings since JDK 17, the
+    /// proxy settings it takes from macOS, the toolkit of JDKs before 13), that the `mvn` launcher sets, and the one
+    /// that Maven 3.9 sets for the build.
+    private static final Set<String> MACHINE_NAMES = Set.of("native.encoding", "stdout.encoding", "stderr.encoding",
+            "stdin.encoding", "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "ftp.proxyHost",
+            "ftp.proxyPort", "socksProxyHost", "socksProxyPort", "http.nonProxyHosts", "ftp.nonProxyHosts",
+            "socksNonProxyHosts", "gopherProxySet", "gopherProxyHost", "gopherProxyPort", "awt.toolkit",
+            "classworlds.conf", "library.jansi.path", BUILD_PACKAGING);
+    /// The most profiles depending on the machine that could add a property cycle whose every combination is tried.
+    private static final int MOST_VARYING_PROFILES = 10;
 
     private final PomSource source;
     private final Map<String, CompletableFuture<Optional<Pom>>> fetched = new ConcurrentHashMap<>();
@@ -242,10 +293,12 @@ public final class BomResolver {
     /// @throws IOException when a parent or an imported BOM cannot be read or has no valid coordinates, on a parent,
     ///                     import or property reference cycle, when a managed dependency has no valid groupId and
     ///                     artifactId, when one keeps a reference that Maven may resolve where the resolution does not
-    ///                     look ([Elsewhere]), or when its type or classifier keeps the text of the placeholder
+    ///                     look ([Elsewhere]), when a profile that depends on the machine could change the result, when
+    ///                     the result reads a property that refers to itself with more text, or when a type or
+    ///                     classifier keeps the text of the placeholder
     public Result resolve(byte[] pom, String bomVersion) throws IOException {
         Model model = build(Pom.parse(pom), List.of());
-        Set<String> warnings = new LinkedHashSet<>(model.warnings());
+        Set<String> warnings = new LinkedHashSet<>();
         Map<String, Entry> byId = new TreeMap<>();
         List<String> doubts = new ArrayList<>();
         for (Managed managed : model.managed()) {
@@ -304,12 +357,8 @@ public final class BomResolver {
         }
         String groupId = lineage.stream().map(Pom::groupId).filter(Objects::nonNull).findFirst().orElse(null);
         String version = lineage.stream().map(Pom::version).filter(Objects::nonNull).findFirst().orElse(null);
-        List<List<Pom.Profile>> active = lineage.stream().map(BomResolver::activeProfiles).toList();
-        Map<String, String> properties = new HashMap<>();
-        for (int i = lineage.size() - 1; i >= 0; i--) {
-            properties.putAll(lineage.get(i).properties());
-            active.get(i).forEach(profile -> properties.putAll(profile.properties()));
-        }
+        List<List<Pom.Profile>> active = lineage.stream().map(each -> activeProfiles(each, List.of())).toList();
+        Map<String, String> properties = properties(lineage, active);
         Map<String, String> modelValues = new HashMap<>();
         putIfNotNull(modelValues, "groupId", groupId);
         putIfNotNull(modelValues, "artifactId", pom.artifactId());
@@ -321,7 +370,7 @@ public final class BomResolver {
             putIfNotNull(modelValues, "parent.version", pom.parent().version());
         }
         String owner = groupId + ":" + pom.artifactId() + ":" + version;
-        Interpolator interpolator = new Interpolator(owner, modelValues, properties, pom.parent() != null);
+        Interpolator interpolator = new Interpolator(owner, modelValues, properties, pom.parent() != null, true);
         String coordinates = interpolator.apply(groupId) + ":" + interpolator.apply(pom.artifactId()) + ":"
                 + interpolator.apply(version);
 
@@ -353,44 +402,36 @@ public final class BomResolver {
                     blankToNull(interpolator.apply(raw.classifier())), interpolator.apply(raw.scope()),
                     raw.origin(), null, null);
             if (!entry.isImport()) {
-                requireValidIds(entry);
+                requireValidIds(entry, coordinates, pom.parent() != null, machineProfiles);
                 entry = entry.doubting(doubt(entry, coordinates, pom.parent() != null, machineProfiles));
             }
             managed.add(entry);
         }
-        // Maven interpolates every property of the model: a cycle fails also where no managed dependency reads it
-        Interpolator everyProperty = new Interpolator(owner, modelValues, properties, pom.parent() != null);
-        for (String property : new TreeSet<>(properties.keySet())) {
-            everyProperty.apply(properties.get(property));
-        }
+        requireNoPropertyCycle(owner, lineage, active, origins, modelValues, pom.parent() != null);
 
         List<String> profiles = new ArrayList<>();
-        Set<String> warnings = new LinkedHashSet<>();
         for (int i = 0; i < lineage.size(); i++) {
-            for (Pom.Profile profile : lineage.get(i).profiles()) {
-                boolean matters = !profile.managed().isEmpty()
-                        || profile.properties().keySet().stream().anyMatch(interpolator::read);
+            Pom current = lineage.get(i);
+            for (Pom.Profile profile : current.profiles()) {
+                String change = change(profile, interpolator, coordinates);
+                if (change == null) {
+                    continue;
+                }
                 if (active.get(i).contains(profile)) {
-                    if (matters) {
-                        profiles.add(profile.id() + " of " + origins.get(i));
+                    profiles.add(profile.id() + " of " + origins.get(i));
+                    // Maven drops the profiles active by default where another profile of the pom is activated
+                    Optional<Pom.Profile> dropping = byDefault(current) ? current.profiles().stream()
+                            .filter(other -> other != profile
+                                    && activated(other.activation()) == Activated.DEPENDS_ON_THE_MACHINE)
+                            .findFirst() : Optional.empty();
+                    if (dropping.isPresent()) {
+                        throw new IOException("the profile " + profile.id() + " of " + origins.get(i) + ", active by "
+                                + "default, " + change + ", and Maven drops it on the machines that activate the "
+                                + describe(dropping.get(), origins.get(i)));
                     }
-                    continue;
-                }
-                if (activated(profile.activation()) != Activated.DEPENDS_ON_THE_MACHINE) {
-                    continue;
-                }
-                String which = describe(profile, origins.get(i));
-                if (!profile.managed().isEmpty()) {
-                    warnings.add(String.format(Locale.ROOT, "profiles that depend on the machine are not applied: "
-                            + "%s manages %d %s", which, profile.managed().size(),
-                            profile.managed().size() == 1 ? "dependency" : "dependencies"));
-                }
-                for (String property : profile.properties().keySet()) {
-                    if (interpolator.read(property)) {
-                        warnings.add(String.format(Locale.ROOT, "profiles that depend on the machine are not "
-                                + "applied: %s sets the property %s, which the managed dependencies of %s use", which,
-                                property, coordinates));
-                    }
+                } else if (activated(profile.activation()) == Activated.DEPENDS_ON_THE_MACHINE) {
+                    throw new IOException("the " + describe(profile, origins.get(i)) + " " + change
+                            + ", and Maven applies it on the machines that activate it");
                 }
             }
         }
@@ -399,8 +440,7 @@ public final class BomResolver {
         List<Managed> own = managed.stream().filter(entry -> !entry.isImport()).toList();
         List<Managed> imports = managed.stream().filter(Managed::isImport).toList();
         if (imports.isEmpty()) {
-            return new Model(coordinates, own, List.copyOf(parents), List.of(), poms, List.copyOf(profiles),
-                    List.copyOf(warnings));
+            return new Model(coordinates, own, List.copyOf(parents), List.of(), poms, List.copyOf(profiles));
         }
         List<String> chain = new ArrayList<>(importers);
         chain.add(coordinates);
@@ -421,19 +461,93 @@ public final class BomResolver {
             imported.addAll(model.imports());
             poms.addAll(model.poms());
             model.profiles().stream().filter(profile -> !profiles.contains(profile)).forEach(profiles::add);
-            warnings.addAll(model.warnings());
             for (Managed fromImport : model.managed()) {
                 byKey.putIfAbsent(fromImport.key(), fromImport.via(id));
             }
         }
         return new Model(coordinates, List.copyOf(byKey.values()), List.copyOf(parents), List.copyOf(imported), poms,
-                List.copyOf(profiles), List.copyOf(warnings));
+                List.copyOf(profiles));
+    }
+
+    /// What a profile changes in the result of a model, for an error: `manages 2 dependencies`, or `sets the property
+    /// x, which the resolution of g:a:1 reads`; null when it does neither.
+    private static String change(Pom.Profile profile, Interpolator interpolator, String coordinates) {
+        if (!profile.managed().isEmpty()) {
+            return "manages " + profile.managed().size()
+                    + (profile.managed().size() == 1 ? " dependency" : " dependencies");
+        }
+        return profile.properties().keySet().stream().filter(interpolator::read).findFirst()
+                .map(property -> "sets the property " + property + ", which the resolution of " + coordinates
+                        + " reads")
+                .orElse(null);
+    }
+
+    /// Fails on a property reference cycle, since Maven interpolates every property of the model, also one that no
+    /// managed dependency reads. It looks with the profiles that a plain build applies on every machine, then with
+    /// profiles that depend on the machine applied as well, in every combination of those that could add a cycle: a
+    /// profile that sets a property with a reference, or one whose activation drops default profiles of its pom that
+    /// set properties. Any other only replaces values with values without a reference, which adds no cycle.
+    ///
+    /// @param active  the profiles each pom of the lineage applies on every machine
+    /// @param origins the poms of the lineage, `groupId:artifactId:version`
+    private static void requireNoPropertyCycle(String owner, List<Pom> lineage, List<List<Pom.Profile>> active,
+            List<String> origins, Map<String, String> modelValues, boolean parent) throws IOException {
+        List<Pom.Profile> varying = new ArrayList<>();
+        List<String> described = new ArrayList<>();
+        for (int i = 0; i < lineage.size(); i++) {
+            for (Pom.Profile profile : lineage.get(i).profiles()) {
+                if (activated(profile.activation()) != Activated.DEPENDS_ON_THE_MACHINE) {
+                    continue;
+                }
+                boolean dropsDefaults = byDefault(lineage.get(i)) && active.get(i).stream()
+                        .anyMatch(other -> other != profile && !other.properties().isEmpty());
+                if (dropsDefaults || profile.properties().values().stream().anyMatch(value -> value.contains("${"))) {
+                    varying.add(profile);
+                    described.add(describe(profile, origins.get(i)));
+                }
+            }
+        }
+        if (varying.size() > MOST_VARYING_PROFILES) {
+            throw new IOException(owner + ": " + varying.size() + " profiles that depend on the machine could add a "
+                    + "property reference cycle, too many to try each combination: " + String.join(", ", described));
+        }
+        for (int combination = 0; combination < 1 << varying.size(); combination++) {
+            List<Pom.Profile> holding = new ArrayList<>();
+            List<String> which = new ArrayList<>();
+            for (int bit = 0; bit < varying.size(); bit++) {
+                if ((combination & 1 << bit) != 0) {
+                    holding.add(varying.get(bit));
+                    which.add(described.get(bit));
+                }
+            }
+            Map<String, String> properties = properties(lineage,
+                    lineage.stream().map(each -> activeProfiles(each, holding)).toList());
+            Interpolator everyProperty = new Interpolator(owner, modelValues, properties, parent, false);
+            try {
+                for (String property : new TreeSet<>(properties.keySet())) {
+                    everyProperty.apply(properties.get(property));
+                }
+            } catch (IOException e) {
+                if (which.isEmpty()) {
+                    throw e;
+                }
+                throw new IOException(e.getMessage() + ", on the machines that activate the "
+                        + String.join(" and the ", which), e);
+            }
+        }
     }
 
     /// Fails, as Maven's validation of the effective model does, on a managed dependency whose groupId or artifactId
-    /// is missing or holds other characters than Maven's id characters, such as a reference that no pom defines. Import
-    /// entries are not managed dependencies: they are replaced by the BOMs they import.
-    private static void requireValidIds(Managed entry) throws IOException {
+    /// is missing or holds other characters than Maven's id characters, such as a reference that no pom defines. A
+    /// reference that Maven may resolve where the resolution does not look ([Elsewhere]) fails too, saying where.
+    /// Import entries are not managed dependencies: they are replaced by the BOMs they import.
+    ///
+    /// @param coordinates     the model that interpolated the entry
+    /// @param parent          whether that model has a parent
+    /// @param machineProfiles the properties that the profiles of its lineage depending on the machine set, each with
+    ///                        the first such profile
+    private static void requireValidIds(Managed entry, String coordinates, boolean parent,
+            Map<String, String> machineProfiles) throws IOException {
         String[][] ids = {{"groupId", entry.groupId()}, {"artifactId", entry.artifactId()}};
         for (String[] id : ids) {
             if (id[1] == null || id[1].isEmpty()) {
@@ -441,6 +555,11 @@ public final class BomResolver {
                         + "accept", entry.origin(), orUnknown(entry.groupId()), orUnknown(entry.artifactId()), id[0]));
             }
             if (!ID.matcher(id[1]).matches()) {
+                String where = mayResolve(id[1], coordinates, parent, machineProfiles);
+                if (where != null) {
+                    throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s, whose %s %s", entry.origin(),
+                            entry.groupId(), entry.artifactId(), id[0], where));
+                }
                 throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s, whose %s %s is no valid Maven id%s",
                         entry.origin(), entry.groupId(), entry.artifactId(), id[0], id[1],
                         id[1].contains("${") ? " (it keeps a reference that no pom defines)" : ""));
@@ -457,8 +576,10 @@ public final class BomResolver {
         return managed;
     }
 
-    /// Why Maven may give a reference that the version, type or classifier of an interpolated entry keeps a value that
-    /// the resolution does not know ([Managed#doubt()]); null when Maven keeps every one of them as written.
+    /// Why Maven may give a reference that the version, type, classifier or scope of an interpolated entry keeps a
+    /// value that the resolution does not know ([Managed#doubt()]); null when Maven keeps every one of them as written.
+    /// The scope counts too: it decides whether an entry of type `pom` is an import, and Maven's validation rejects a
+    /// system scope without systemPath.
     ///
     /// @param coordinates     the model that interpolated the entry
     /// @param parent          whether that model has a parent
@@ -466,22 +587,34 @@ public final class BomResolver {
     ///                        the first such profile
     private static String doubt(Managed entry, String coordinates, boolean parent,
             Map<String, String> machineProfiles) {
-        for (String value : new String[] {entry.version(), entry.type(), entry.classifier()}) {
-            Matcher matcher = EXPRESSION.matcher(Objects.toString(value, ""));
-            while (matcher.find()) {
-                String expression = matcher.group(1);
-                String name = expression.startsWith(".") ? expression.substring(1) : expression;
-                Elsewhere where = elsewhere(name, parent, machineProfiles.keySet());
-                if (where != null) {
-                    return "keeps ${" + expression + "}, " + switch (where) {
-                        case MODEL -> "which Maven reads from the model of " + coordinates + ", beyond the "
-                                + "coordinates, packaging, parent and properties that the resolution reads";
-                        case MACHINE -> "which Maven takes from the machine that builds: a property of the JVM, of "
-                                + "the environment or of Maven itself";
-                        case PROFILE -> "which the " + machineProfiles.get(name) + " sets on the machines that "
-                                + "activate it, a profile that the resolution does not apply";
-                    };
-                }
+        for (String value : new String[] {entry.version(), entry.type(), entry.classifier(), entry.scope()}) {
+            String where = mayResolve(value, coordinates, parent, machineProfiles);
+            if (where != null) {
+                return where;
+            }
+        }
+        return null;
+    }
+
+    /// Why Maven may give a reference that an interpolated value keeps a value that the resolution does not know
+    /// ([Elsewhere]), for the first such reference: `keeps ${x}, which ...`; null when Maven keeps every reference of
+    /// the value as written.
+    private static String mayResolve(String value, String coordinates, boolean parent,
+            Map<String, String> machineProfiles) {
+        Matcher matcher = EXPRESSION.matcher(Objects.toString(value, ""));
+        while (matcher.find()) {
+            String expression = matcher.group(1);
+            String name = expression.startsWith(".") ? expression.substring(1) : expression;
+            Elsewhere where = elsewhere(name, parent, machineProfiles.keySet());
+            if (where != null) {
+                return "keeps ${" + expression + "}, " + switch (where) {
+                    case MODEL -> "which Maven may read from the model of " + coordinates + ", beyond the "
+                            + "coordinates, packaging, parent and properties that the resolution reads";
+                    case MACHINE -> "which Maven may take from the machine that builds: a property of the JVM, of the "
+                            + "environment or of Maven itself";
+                    case PROFILE -> "which the " + machineProfiles.get(name) + " sets on the machines that activate "
+                            + "it, a profile that the resolution does not apply";
+                };
             }
         }
         return null;
@@ -489,37 +622,83 @@ public final class BomResolver {
 
     /// Where Maven may find a value for the reference `${name}` that no property defines, a value that the resolution
     /// does not know; null when Maven keeps such a reference as written in every plain build. Maven reads the model
-    /// along the reference's path, with or without the `project.` or `pom.` prefix (a text element only as a whole:
-    /// `${version.jdk-misc}` reads nothing), and an unprefixed reference also among the properties of the machine.
+    /// along the reference's path, with or without the `project.` or `pom.` prefix ([#byName]), also through a getter:
+    /// of a text element's String, `${version.empty}` (while `${version.jdk-misc}` reads nothing), or of the model,
+    /// `${class}`; and an unprefixed reference also among the properties of the machine, [#MACHINE_NAMES] included.
     ///
     /// @param parent     whether the model has a parent
     /// @param machineSet the properties that profiles depending on the machine set
     private static Elsewhere elsewhere(String name, boolean parent, Set<String> machineSet) {
+        Elsewhere byName = byName(name, parent);
+        if (byName != null) {
+            return byName;
+        }
+        String path = Interpolator.unprefixed(name);
+        String[] parts = path.split("[.\\[(]", 3);
+        boolean text = MODEL_TEXT.contains(parts[0]) || COORDINATES.contains(parts[0]);
+        if (parts[0].equals("class") || text && parts.length > 1 && path.charAt(parts[0].length()) == '.'
+                && STRING_GETTERS.contains(parts[1])) {
+            return Elsewhere.MODEL;
+        }
+        if (path.equals(name) && MACHINE_NAMES.contains(name)) {
+            return Elsewhere.MACHINE;
+        }
+        return machineSet.contains(name) ? Elsewhere.PROFILE : null;
+    }
+
+    /// Where Maven finds a value for the reference `${name}` by its name, as the resolution takes it where every value
+    /// of the reference that it knows holds the reference itself: an element of the model that the name names, a text
+    /// element as a whole (`${name}`) or one with parts along a path (`${build.finalName}`), or a property of the
+    /// machine ([#MACHINE_PROPERTIES]); null otherwise, also where only a getter would give a value (`${class}`,
+    /// `${version.empty}`), which Maven finds on some models only (not `${name.empty}` without `<name>`), and for
+    /// [#MACHINE_NAMES], which some machines lack (`${native.encoding}` before JDK 17).
+    ///
+    /// @param parent whether the model has a parent
+    private static Elsewhere byName(String name, boolean parent) {
         String path = Interpolator.unprefixed(name);
         String element = path.split("[.\\[(]", 2)[0];
         if (MODEL_PARTS.contains(element) || element.equals(path) && MODEL_TEXT.contains(element)
                 || element.equals("parent") && parent) {
             return Elsewhere.MODEL;
         }
-        if (path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith)) {
-            return Elsewhere.MACHINE;
-        }
-        return machineSet.contains(name) ? Elsewhere.PROFILE : null;
+        return path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith) ? Elsewhere.MACHINE : null;
     }
 
-    /// The profiles of a pom that a plain Maven build activates on every machine, in declaration order: those whose
-    /// activation conditions hold, else those active by default.
-    private static List<Pom.Profile> activeProfiles(Pom pom) {
+    /// The profiles of a pom that a plain Maven build activates, in declaration order: those whose activation
+    /// conditions hold, else those active by default.
+    ///
+    /// @param holding the profiles that depend on the machine whose conditions are taken to hold (none: the profiles
+    ///                applied on every machine)
+    private static List<Pom.Profile> activeProfiles(Pom pom, List<Pom.Profile> holding) {
         List<Pom.Profile> active = new ArrayList<>();
         List<Pom.Profile> byDefault = new ArrayList<>();
         for (Pom.Profile profile : pom.profiles()) {
-            if (activated(profile.activation()) == Activated.YES) {
+            if (activated(profile.activation()) == Activated.YES || holding.stream().anyMatch(on -> on == profile)) {
                 active.add(profile);
             } else if (profile.activation() != null && profile.activation().activeByDefault()) {
                 byDefault.add(profile);
             }
         }
         return active.isEmpty() ? byDefault : active;
+    }
+
+    /// Whether the profiles of a pom that are active by default apply in a plain build: no profile of the pom is
+    /// activated on every machine.
+    private static boolean byDefault(Pom pom) {
+        return pom.profiles().stream().noneMatch(profile -> activated(profile.activation()) == Activated.YES);
+    }
+
+    /// The properties of a model as Maven merges them: from the topmost parent down, each pom's own, then those of its
+    /// active profiles, a later value replacing an earlier one.
+    ///
+    /// @param active the profiles each pom of the lineage applies
+    private static Map<String, String> properties(List<Pom> lineage, List<List<Pom.Profile>> active) {
+        Map<String, String> properties = new HashMap<>();
+        for (int i = lineage.size() - 1; i >= 0; i--) {
+            properties.putAll(lineage.get(i).properties());
+            active.get(i).forEach(profile -> properties.putAll(profile.properties()));
+        }
+        return properties;
     }
 
     /// Whether the activation conditions of a profile hold in a plain build; Maven requires all of them. A property
@@ -535,7 +714,7 @@ public final class BomResolver {
             if (property.isEmpty()) {
                 return Activated.NO;
             }
-            if (MACHINE_PROPERTIES.stream().anyMatch(property::startsWith)) {
+            if (machineProperty(property)) {
                 machine = true;
             } else {
                 String value = activation.propertyValue();
@@ -549,6 +728,11 @@ public final class BomResolver {
             }
         }
         return machine ? Activated.DEPENDS_ON_THE_MACHINE : Activated.NO;
+    }
+
+    /// Whether the machine that builds may provide the property: one of [#MACHINE_PROPERTIES] or [#MACHINE_NAMES].
+    private static boolean machineProperty(String property) {
+        return MACHINE_PROPERTIES.stream().anyMatch(property::startsWith) || MACHINE_NAMES.contains(property);
     }
 
     /// `profile <id> of <pom> (<conditions>)`, for a profile that depends on the machine.
@@ -687,7 +871,8 @@ public final class BomResolver {
     }
 
     /// The outcome of the fetch of another thread; its failure as it was thrown, so that a stop of the requests
-    /// ([Http.StoppedException]) stays one.
+    /// ([Http.StoppedException]) stays one. Another failure, a [RuntimeException] or an [Error], comes in an
+    /// IOException with its message, or with its class name when it has none (a JVM's StackOverflowError).
     private static <T> T await(CompletableFuture<T> future, String id) throws IOException {
         try {
             return future.get();
@@ -698,7 +883,8 @@ public final class BomResolver {
             if (e.getCause() instanceof IOException cause) {
                 throw cause;
             }
-            throw new IOException(e.getCause().getMessage(), e.getCause());
+            Throwable failure = e.getCause();
+            throw new IOException(Objects.requireNonNullElse(failure.getMessage(), failure.toString()), failure);
         }
     }
 
@@ -717,27 +903,44 @@ public final class BomResolver {
     }
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or
-    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Like
-    /// Maven, it passes over a value that holds the reference itself for the next one. An unknown reference stays as
-    /// written; a reference cycle fails, and so does a reference whose only values hold it, unless Maven may find
-    /// another value in the model or on the machine ([Elsewhere]). A profile that only some machines activate is not
-    /// applied, as everywhere in the resolution.
+    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Maven
+    /// reads `${packaging}` first among the properties it sets for the build ([BomResolver#BUILD_PACKAGING]): where the
+    /// values go into the result, the resolution does not know it and it stays as written; the cycle pass takes the
+    /// BOM's own packaging, as when Maven builds the BOM itself. Like Maven, it passes over a value that holds the
+    /// reference itself for the next one. Where the values go into the result, a property that holds more than the bare
+    /// reference to itself fails instead: Maven interpolates every property in place before it reads the managed
+    /// dependencies and the coordinates, in an order that depends on the property names, so such a property gives
+    /// either its own value, interpolated, or the next one. An unknown reference stays as written; a reference cycle
+    /// fails, and so does a reference whose only values hold it, unless Maven finds another value in the model or on
+    /// the machine by the reference's name ([BomResolver#byName]).
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");
+
+        /// A value of a reference, looked up when needed.
+        @FunctionalInterface
+        private interface Source {
+
+            String get() throws IOException;
+        }
 
         private final String owner;
         private final Map<String, String> modelValues;
         private final Map<String, String> properties;
         private final boolean parent;
+        private final boolean result;
         private final Set<String> read = new HashSet<>();
 
         /// @param parent whether the model has a parent
-        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties, boolean parent) {
+        /// @param result whether the values go into the result, where a property that refers to itself with more text
+        ///               fails
+        Interpolator(String owner, Map<String, String> modelValues, Map<String, String> properties, boolean parent,
+                boolean result) {
             this.owner = owner;
             this.modelValues = modelValues;
             this.properties = properties;
             this.parent = parent;
+            this.result = result;
         }
 
         String apply(String value) throws IOException {
@@ -770,13 +973,27 @@ public final class BomResolver {
             if (resolving.contains(key)) {
                 throw cycle(resolving, key);
             }
+            // Maven finds it first among the properties that it sets for the build. Where the values go into the
+            // result, the resolution does not know that packaging, so it stays as written; the cycle pass takes the
+            // BOM's own, as when Maven builds the BOM itself, so that a cycle through it fails as in Maven
+            if (name.equals(BUILD_PACKAGING)) {
+                if (result) {
+                    return null;
+                }
+                resolving.add(key);
+                try {
+                    return interpolate(modelValues.get("packaging"), resolving);
+                } finally {
+                    resolving.removeLast();
+                }
+            }
             // the values the resolution knows, in Maven's order: the model value of a prefixed name, the property, the
             // model value of an unprefixed name
-            List<Supplier<String>> sources = List.of(() -> key.equals(name) ? null : modelValues.get(key),
-                    () -> property(name), () -> modelValues.get(name));
             String itself = "${" + expression + "}";
+            List<Source> sources = List.of(() -> key.equals(name) ? null : modelValues.get(key),
+                    () -> property(name, itself), () -> modelValues.get(name));
             boolean passedOver = false;
-            for (Supplier<String> source : sources) {
+            for (Source source : sources) {
                 String value = source.get();
                 if (value != null && value.contains(itself)) {
                     passedOver = true;
@@ -789,7 +1006,8 @@ public final class BomResolver {
                     }
                 }
             }
-            if (passedOver && elsewhere(name, parent, Set.of()) == null) {
+            // Maven looks further, in the model and on the machine, and fails on a cycle where it finds nothing there
+            if (passedOver && byName(name, parent) == null) {
                 List<String> path = new ArrayList<>(resolving);
                 path.add(key);
                 throw cycle(path, key);
@@ -797,9 +1015,17 @@ public final class BomResolver {
             return null;
         }
 
-        private String property(String name) {
+        /// The property `name`, which the reference `itself` reads. Where the values go into the result, a property
+        /// that holds `itself` and more text fails: Maven may read its value interpolated in place or pass it over.
+        private String property(String name, String itself) throws IOException {
             read.add(name);
-            return properties.get(name);
+            String value = properties.get(name);
+            if (result && value != null && value.contains(itself) && !value.equals(itself)) {
+                throw new IOException(owner + ": " + itself + " reads the property " + name + ", " + value
+                        + ", which refers to itself with more text: Maven interpolates such a property in place, in an "
+                        + "order that depends on the property names, so the value of " + itself + " is not known");
+            }
+            return value;
         }
 
         private IOException cycle(List<String> path, String key) {

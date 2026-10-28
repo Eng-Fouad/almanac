@@ -351,6 +351,13 @@ class BomSnapshotsTest {
                           <version>1.0.0.Final</version><properties><a>pre-${a}</a></properties>
                           <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId>
                           <version>${unknown}</version></dependency></dependencies></dependencyManagement></project>""",
+                "a property reference cycle on the machines that activate a JDK profile", """
+                        <project><groupId>io.quarkus</groupId><artifactId>quarkus-bom</artifactId>
+                          <version>1.0.0.Final</version><dependencyManagement><dependencies><dependency>
+                          <groupId>g</groupId><artifactId>x</artifactId><version>1</version></dependency>
+                          </dependencies></dependencyManagement><profiles><profile><id>jdk11</id><activation>
+                          <jdk>[11,)</jdk></activation><properties><a>${b}</a><b>${a}</b></properties></profile>
+                          </profiles></project>""",
                 "a managed groupId that keeps a reference", managedBom("""
                         <dependency><groupId>${unknown.group}</groupId><artifactId>art</artifactId>
                           <version>1.0</version></dependency>"""),
@@ -391,6 +398,11 @@ class BomSnapshotsTest {
                           <version>${lib.version}</version></dependency></dependencies></dependencyManagement>
                           <profiles><profile><id>jdk11</id><activation><jdk>[11,)</jdk></activation>
                           <properties><lib.version>2.0</lib.version></properties></profile></profiles></project>""");
+        Map<String, String> causes = Map.of(
+                "a model element", "the managed dependency org.acme:named ",
+                "a property of the machine", "the managed dependency org.acme:jdk ",
+                "a property that only a JDK profile sets", "the profile jdk11 of io.quarkus:quarkus-bom:1.0.0.Final "
+                        + "(JDK [11,)) sets the property lib.version, which the resolution of ");
         try (ScratchDir dir = ScratchDir.create(); Http offline = new Http(1, true)) {
             for (Map.Entry<String, String> bom : boms.entrySet()) {
                 Path cache = dir.resolve("cache-" + bom.getKey().replace(' ', '-'));
@@ -400,7 +412,7 @@ class BomSnapshotsTest {
                 String log = log(() -> {
                     IOException e = assertThrows(IOException.class,
                             () -> boms(cache, store, offline).load("1.0.0.Final", false), bom.getKey());
-                    assertTrue(e.getMessage().startsWith("the managed dependency org.acme:"), e.getMessage());
+                    assertTrue(e.getMessage().startsWith(causes.get(bom.getKey())), e.getMessage());
                 });
 
                 assertFalse(store.exists("1.0.0.Final", SnapshotStore.BOM), bom.getKey());

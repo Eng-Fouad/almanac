@@ -65,9 +65,10 @@ public final class BomSnapshots {
     ///
     /// @throws IOException when the BOM pom, a parent or an imported BOM cannot be read, when a parent or an import
     ///                     has no valid coordinates, on a parent, import or property reference cycle, when a managed
-    ///                     dependency has no valid groupId and artifactId, or when one keeps a reference that Maven
-    ///                     may resolve from the machine or from parts of the pom that the resolution does not read;
-    ///                     nothing is written then
+    ///                     dependency has no valid groupId and artifactId, when one keeps a reference that Maven
+    ///                     may resolve from the machine or from parts of the pom that the resolution does not read,
+    ///                     when a profile that depends on the machine could change the result, or when the resolution
+    ///                     reads a property that refers to itself with more text; nothing is written then
     public BomSnapshot load(String version, boolean force) throws IOException {
         Optional<BomSnapshot> existing = force ? Optional.empty() : existing(version);
         if (existing.isPresent()) {

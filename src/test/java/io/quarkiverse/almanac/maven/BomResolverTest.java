@@ -306,6 +306,17 @@ class BomResolverTest {
                 "g:bom:1: the property references form a cycle: a -> a");
         failures.put(project("g:bom:1", managed(dep("g:x:${unknown}"), bomImport("org.imp:i:1"))),
                 "org.imp:i:1: the property references form a cycle: q -> p -> q");
+        // JDKs before 17 have no native.encoding to give it a value
+        failures.put(project("g:bom:1", properties("native.encoding=${native.encoding}"), managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: native.encoding -> native.encoding");
+        // the build packaging that Maven reads first is the BOM's own when Maven builds the BOM: a cycle through it,
+        // also by way of another property
+        failures.put(project("g:bom:1", "<packaging>${pk}</packaging>", properties("pk=${packaging}"),
+                        managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: packaging -> pk -> packaging");
+        failures.put(project("g:bom:1", "<packaging>${pk}</packaging>", properties("pk=${x}", "x=${packaging}"),
+                        managed(dep("g:x:1"))),
+                "g:bom:1: the property references form a cycle: x -> packaging -> pk -> x");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -313,15 +324,95 @@ class BomResolverTest {
     @Test
     void aValueThatHoldsTheReferenceItselfIsPassedOverAsMavenDoes() throws IOException {
         // the next value is the model's version here, and one that Maven may find in the model or on the machine for
-        // name and java.home; a cycle that the child overrides, or one in a profile that a plain build does not apply,
-        // is no cycle either
+        // name and java.home; a cycle that the child overrides is no cycle either; the result may read a bare
+        // reference to itself, which gives the next value in Maven too
         Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("a=pre-${a}")));
         String bom = project(":bom:", parent("g:parent:1"),
                 properties("a=plain", "version=x-${version}", "name=${name}", "java.home=${java.home}",
-                        "v2=${project.version}"),
-                managed(dep("g:v:${version}"), dep("g:w:${v2}")),
-                "<profiles>" + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>");
-        assertEquals(Map.of("g:v", "1", "g:w", "1"), versions(resolve(repo, bom)));
+                        "v2=${project.version}", "artifactId=${artifactId}"),
+                managed(dep("g:v:${project.version}"), dep("g:w:${v2}"), dep("g:x:${artifactId}")));
+        assertEquals(Map.of("g:v", "1", "g:w", "1", "g:x", "bom"), versions(resolve(repo, bom)));
+        assertEquals(Map.of("g:a", "1"), versions(resolve(BomResolver.PomSource.NONE,
+                project("g:bom:1", properties("version=${version}"), managed(dep("g:a:${version}"))))));
+    }
+
+    @Test
+    void aPropertyThatRefersToItselfIsACycleWhereOnlyAGetterWouldGiveAValue() {
+        // Maven finds nothing for ${name.empty} without <name>, nor for ${class.foo}, and fails on the cycle, also in a
+        // parent, an imported BOM or a profile that depends on the machine; it finds a value for ${version.empty} and
+        // ${class}, which the resolution does not tell apart, so these fail too
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", properties("url.blank=${url.blank}")))
+                .add("org.imp:i:1", project("org.imp:i:1", properties("name.empty=${name.empty}"),
+                        managed(dep("g:b:1"))));
+        String cycle = "g:bom:1: the property references form a cycle: ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", properties("name.empty=${name.empty}"), managed(dep("g:a:1"))),
+                cycle + "name.empty -> name.empty");
+        failures.put(project("g:bom:1", properties("class.foo=${class.foo}"), managed(dep("g:a:1"))),
+                cycle + "class.foo -> class.foo");
+        failures.put(project("g:bom:1", properties("description.bytes=x-${description.bytes}"), managed(dep("g:a:1"))),
+                cycle + "description.bytes -> description.bytes");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:1"))), cycle + "url.blank -> url.blank");
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "org.imp:i:1: the property references form a cycle: name.empty -> name.empty");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>" + profile("j", "<jdk>[11,)</jdk>",
+                        properties("description.empty=${description.empty}")) + "</profiles>"),
+                cycle + "description.empty -> description.empty, on the machines that activate the profile j of "
+                        + "g:bom:1 (JDK [11,))");
+        failures.put(project("g:bom:1", properties("version.empty=${version.empty}"), managed(dep("g:a:1"))),
+                cycle + "version.empty -> version.empty");
+        failures.put(project("g:bom:1", properties("class=${class}"), managed(dep("g:a:1"))), cycle + "class -> class");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void aPropertyThatTheResultReadsAndThatRefersToItselfWithMoreTextFails() {
+        // Maven interpolates every property in place before it reads the managed dependencies and the coordinates, in
+        // an order that depends on the property names: version=x-${version} gives x-1 there, or 1 when it passes the
+        // property over, also through another property (a=${version} gives 1, n=${version} gives x-1)
+        Repo repo = new Repo()
+                .add("t:imp:5", project("t:imp:5", properties("version=${version}.Final"),
+                        managed(dep("g:b:${version}"))))
+                .add("t:p:7", project("t:p:7"));
+        String tail = ", which refers to itself with more text: Maven interpolates such a property in place, in an "
+                + "order that depends on the property names, so the value of ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("t:bom:1", properties("version=x-${version}"), managed(dep("g:a:${version}"))),
+                "t:bom:1: ${version} reads the property version, x-${version}" + tail + "${version} is not known");
+        // a value holds the reference as written, here ${.version}, which Maven reads as version and gives x-1 for
+        failures.put(project("t:bom:1", properties("version=x-${.version}"), managed(dep("g:a:${.version}"))),
+                "t:bom:1: ${.version} reads the property version, x-${.version}" + tail + "${.version} is not known");
+        failures.put(project("t:bom:1", managed(bomImport("t:imp:5"))),
+                "t:imp:5: ${version} reads the property version, ${version}.Final" + tail + "${version} is not known");
+        failures.put(project("t:bom:5", properties("version=${version}.0"), managed(bomImport("t:imp:${version}"))),
+                "t:bom:5: ${version} reads the property version, ${version}.0" + tail + "${version} is not known");
+        failures.put(project("t:bom:1", properties("artifactId=${artifactId}-x"), managed(dep("g:a:${artifactId}"))),
+                "t:bom:1: ${artifactId} reads the property artifactId, ${artifactId}-x" + tail
+                        + "${artifactId} is not known");
+        failures.put(project(":bom:", parent("t:p:7"), properties("parent.version=${parent.version}-x"),
+                        managed(dep("g:a:${parent.version}"))),
+                "t:bom:7: ${parent.version} reads the property parent.version, ${parent.version}-x" + tail
+                        + "${parent.version} is not known");
+        for (String reader : List.of("a", "n", "o", "zz", "vx", "netty.version")) {
+            failures.put(project("t:bom:1", properties(reader + "=${version}", "version=x-${version}"),
+                            managed(dep("g:a:${" + reader + "}"))),
+                    "t:bom:1: ${version} reads the property version, x-${version}" + tail + "${version} is not known");
+        }
+        // a groupId, a classifier, a scope and the coordinates of the BOM read it too
+        failures.put(project("t:bom:1", properties("groupId=${groupId}.x"), managed(dep("${groupId}:a:1"))),
+                "t:bom:1: ${groupId} reads the property groupId, ${groupId}.x" + tail + "${groupId} is not known");
+        failures.put(project("t:bom:1", properties("c=${c}-x"), managed(dep("g:a::${c}:1"))),
+                "t:bom:1: ${c} reads the property c, ${c}-x" + tail + "${c} is not known");
+        failures.put(project("t:bom:1", properties("s=x${s}"), managed("<dependency><groupId>g</groupId>"
+                        + "<artifactId>a</artifactId><version>1</version><scope>${s}</scope></dependency>")),
+                "t:bom:1: ${s} reads the property s, x${s}" + tail + "${s} is not known");
+        failures.put(project("g-${version}:bom:1", properties("version=x-${version}"), managed(dep("g:a:1"))),
+                "g-${version}:bom:1: ${version} reads the property version, x-${version}" + tail
+                        + "${version} is not known");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
 
     @Test
@@ -469,14 +560,14 @@ class BomResolverTest {
 
     @Test
     void keepsAsWrittenTheReferencesThatMavenKeepsOnEveryMachine() throws IOException {
-        // Maven reads a text element of the model only as a whole, and a project or parent element that is not there
-        // gives nothing; without project directory it knows no basedir either
+        // Maven reads a text element of the model only as a whole or through a getter of its String, and a project or
+        // parent element that is not there gives nothing; without project directory it knows no basedir either
         Repo repo = new Repo().add("org.imp:i:1", project("org.imp:i:1",
                 managed(dep("g:a:${java.version}"), dep("g:b:2"))));
         String bom = project("io.quarkus:quarkus-bom:1",
                 "<name>The BOM</name>",
                 managed(dep("org.jboss:jdk-misc:${version.jdk-misc}"), dep("g:name-x:${name.x}"),
-                        dep("g:version-jdk:${project.version.jdk}"),
+                        dep("g:version-jdk:${project.version.jdk}"), dep("g:class-name:${version.class-name}"),
                         dep("org.apache.maven.shared:maven-artifact-transfer:${maven-artifact-transfer.version}"),
                         dep("org.glassfish.web:el-impl:${el-impl.version}"), dep("g:basedir:${project.basedir}"),
                         dep("g:basedir2:${basedir}"), dep("g:foo:${project.foo}"), dep("g:parent:${parent.version}"),
@@ -487,24 +578,22 @@ class BomResolverTest {
         BomResolver.Result result = resolve(repo, bom);
 
         assertEquals("${version.jdk-misc}", versions(result).get("org.jboss:jdk-misc"));
+        assertEquals("${version.class-name}", versions(result).get("g:class-name"));
         assertEquals("${parent.version}", versions(result).get("g:parent"));
         assertEquals("1.0", versions(result).get("g:a"), "the importer manages it: the import's machine value is out");
-        assertEquals(10, result.unresolved().size());
+        assertEquals(11, result.unresolved().size());
     }
 
     @Test
-    void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() {
-        // Maven reads more of the model than the coordinates, the packaging and the parent, takes properties from the
-        // machine that builds, and applies the profiles that the machine activates
-        String jdkProfile = "<profiles>" + profile("jdk8+", "<jdk>[1.8,)</jdk>", properties("foo.version=1.0"))
-                + "</profiles>";
-        Repo repo = new Repo()
-                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:a:${foo.version}")), jdkProfile))
-                .add("g:parent:1", project("g:parent:1"));
-        String model = ", which Maven reads from the model of g:bom:1, beyond the coordinates, packaging, parent and "
-                + "properties that the resolution reads";
-        String machine = ", which Maven takes from the machine that builds: a property of the JVM, of the environment "
-                + "or of Maven itself";
+    void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() throws IOException {
+        // Maven reads more of the model than the coordinates, the packaging and the parent, and takes properties from
+        // the machine that builds
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1"))
+                .add("t:imp:1", project("t:imp:1", managed(dep("g:b:${.packaging}"))));
+        String model = ", which Maven may read from the model of g:bom:1, beyond the coordinates, packaging, parent "
+                + "and properties that the resolution reads";
+        String machine = ", which Maven may take from the machine that builds: a property of the JVM, of the "
+                + "environment or of Maven itself";
         Map<String, String> failures = new LinkedHashMap<>();
         failures.put(project("g:bom:1", "<name>The BOM</name>", managed(dep("g:a:${project.name}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${project.name}" + model);
@@ -516,21 +605,49 @@ class BomResolverTest {
                 "the managed dependency g:a (declared in g:bom:1) keeps ${pom.description}" + model);
         failures.put(project("g:bom:1", parent("g:parent:1"), managed(dep("g:a:${project.parent.relativePath}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${project.parent.relativePath}" + model);
+        // what Java's reflection gives: Object.getClass() of the model, the getters of a text element's String
+        for (String reference : List.of("${class}", "${project.class.simpleName}", "${version.empty}",
+                "${pom.name.bytes}", "${groupId.blank}", "${packaging.class}", "${artifactId.class.simpleName}")) {
+            failures.put(project("g:bom:1", "<name>N</name>", managed(dep("g:a:" + reference))),
+                    "the managed dependency g:a (declared in g:bom:1) keeps " + reference + model);
+        }
         failures.put(project("g:bom:1", managed(dep("g:a:${java.version}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${java.version}" + machine);
         failures.put(project("g:bom:1", managed(dep("g:a:${env.HOME}"), dep("g:b::${user.home}:1"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${env.HOME}" + machine
                         + "; 1 more managed dependency keeps such a reference");
-        failures.put(project("g:bom:1", managed(dep("g:a:${foo.version}")), jdkProfile),
-                "the managed dependency g:a (declared in g:bom:1) keeps ${foo.version}, which the profile jdk8+ of "
-                        + "g:bom:1 (JDK [1.8,)) sets on the machines that activate it, a profile that the resolution "
-                        + "does not apply");
-        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
-                "the managed dependency g:a (declared in org.imp:i:1, imported through org.imp:i:1) keeps "
-                        + "${foo.version}, which the profile jdk8+ of org.imp:i:1 (JDK [1.8,)) sets on the machines "
-                        + "that activate it, a profile that the resolution does not apply");
+        // also a property that the JDK sets outside those prefixes, or that the mvn launcher sets
+        for (String reference : List.of("${native.encoding}", "${classworlds.conf}", "${library.jansi.path}",
+                "${http.nonProxyHosts}", "${https.proxyHost}", "${socksProxyHost}", "${gopherProxyHost}",
+                "${awt.toolkit}")) {
+            failures.put(project("g:bom:1", managed(dep("g:a:" + reference))),
+                    "the managed dependency g:a (declared in g:bom:1) keeps " + reference + machine);
+        }
+        failures.put(project("g:bom:1", managed(dep("g:a::${stdout.encoding}:1"))),
+                "the managed dependency g:a:${stdout.encoding} (declared in g:bom:1) keeps ${stdout.encoding}"
+                        + machine);
+        // in a scope too, which decides whether an entry of type pom is an import: <name>import</name> makes this one
+        // an import in Maven
+        for (String scope : List.of("${project.name}", "${env.SCOPE}")) {
+            failures.put(project("g:bom:1", "<name>import</name>", managed("<dependency><groupId>t</groupId>"
+                            + "<artifactId>imp</artifactId><version>1</version><type>pom</type><scope>" + scope
+                            + "</scope></dependency>")),
+                    "the managed dependency t:imp:pom (declared in g:bom:1) keeps " + scope
+                            + (scope.startsWith("${env.") ? machine : model));
+        }
+        // Maven 3.9 reads ${packaging} among the properties it sets for the build, before a property of that name: the
+        // packaging of the project it builds, which imports the BOM
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", properties("packaging=pp"),
+                        managed(dep("g:a:${packaging}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${packaging}" + machine);
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", managed(bomImport("t:imp:1"))),
+                "the managed dependency g:b (declared in t:imp:1, imported through t:imp:1) keeps ${.packaging}"
+                        + machine);
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+        // while ${project.packaging} is the model's own
+        assertEquals(Map.of("g:a", "pom"), versions(resolve(repo, project("g:bom:1", "<packaging>pom</packaging>",
+                managed(dep("g:a:${project.packaging}"))))));
     }
 
     @Test
@@ -583,6 +700,32 @@ class BomResolverTest {
         failures.put(project(":bom:", parent("g:parent:1")),
                 "g:parent:1 manages g:${unknown.artifact}, whose artifactId ${unknown.artifact} is no valid Maven id "
                         + "(it keeps a reference that no pom defines)");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void aGroupIdOrArtifactIdThatKeepsAReferenceMavenMayResolveSaysWhere() {
+        // where Maven may give the reference a value, the id may be valid there: the error names where it may come
+        // from, as for a version
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1",
+                managed(dep("${project.description}:a:1"))));
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("t:bom:1", "<name>N</name>", managed(dep("g:${project.name}:1"))),
+                "t:bom:1 manages g:${project.name}, whose artifactId keeps ${project.name}, which Maven may read from "
+                        + "the model of t:bom:1, beyond the coordinates, packaging, parent and properties that the "
+                        + "resolution reads");
+        failures.put(project(":bom:", parent("g:parent:1")),
+                "g:parent:1 manages ${project.description}:a, whose groupId keeps ${project.description}, which Maven "
+                        + "may read from the model of g:bom:1, beyond the coordinates, packaging, parent and "
+                        + "properties that the resolution reads");
+        failures.put(project("t:bom:1", managed(dep("${env.GROUP}:a:1"))),
+                "t:bom:1 manages ${env.GROUP}:a, whose groupId keeps ${env.GROUP}, which Maven may take from the "
+                        + "machine that builds: a property of the JVM, of the environment or of Maven itself");
+        failures.put(project("t:bom:1", managed(dep("g:${art}:1")),
+                        "<profiles>" + profile("j", "<jdk>[1.8,)</jdk>", properties("art=a")) + "</profiles>"),
+                "t:bom:1 manages g:${art}, whose artifactId keeps ${art}, which the profile j of t:bom:1 (JDK [1.8,)) "
+                        + "sets on the machines that activate it, a profile that the resolution does not apply");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
@@ -650,9 +793,9 @@ class BomResolverTest {
                                 managed(dep("g:fast:1")))
                         + profile("default", "<activeByDefault>true</activeByDefault>", properties("y.version=2"))
                         + profile("manual", "", managed(dep("g:manual:1")))
-                        + profile("jdk11", "<jdk>[11,)</jdk>", managed(dep("g:jdk:1")), properties("y.version=11"))
-                        + profile("java-vendor", "<property><name>!java.vendor</name></property>",
-                                managed(dep("g:vendor:1")))
+                        // depends on the machine, but changes nothing that the resolution reads
+                        + profile("jdk11", "<jdk>[11,)</jdk>", properties("compiler.release=11"))
+                        + profile("mac", "<os><family>mac</family></os>")
                         + "</profiles>");
 
         BomResolver.Result result = resolve(BomResolver.PomSource.NONE, bom);
@@ -660,13 +803,202 @@ class BomResolverTest {
         assertEquals(Map.of("g:x", "2", "g:y", "1", "g:replaced", "2", "g:extra", "1", "g:mode", "1"),
                 versions(result));
         assertEquals(List.of("without-skip of g:bom:1", "not-fast of g:bom:1"), result.profiles());
-        assertEquals(List.of(
-                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) manages 1 "
-                        + "dependency",
-                "profiles that depend on the machine are not applied: profile jdk11 of g:bom:1 (JDK [11,)) sets the "
-                        + "property y.version, which the managed dependencies of g:bom:1 use",
-                "profiles that depend on the machine are not applied: profile java-vendor of g:bom:1 (property "
-                        + "!java.vendor) manages 1 dependency"), result.warnings());
+        assertEquals(List.of(), result.warnings());
+    }
+
+    @Test
+    void failsWhereAProfileThatDependsOnTheMachineChangesTheResult() {
+        // Maven applies it on the machines that activate it, and JDK [1.8,) is every machine that runs Maven
+        String jdk = "<jdk>[1.8,)</jdk>";
+        Repo repo = new Repo()
+                .add("g:parent:1", project("g:parent:1", properties("x=0"),
+                        "<profiles>" + profile("jdk8+", jdk, properties("x=2")) + "</profiles>"))
+                .add("org.imp:i:1", project("org.imp:i:1", managed(dep("g:a:${foo.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("foo.version=1.0")) + "</profiles>"));
+        String applies = ", and Maven applies it on the machines that activate it";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", properties("x=1"), managed(dep("g:a:${x}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("x=2")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:${foo.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("foo.version=1.0")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property foo.version, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:${x}"))),
+                "the profile jdk8+ of g:parent:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + applies);
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:1"))),
+                "the profile jdk8+ of org.imp:i:1 (JDK [1.8,)) sets the property foo.version, which the resolution of "
+                        + "org.imp:i:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(bomImport("org.imp:i:${imp.version}")),
+                        "<profiles>" + profile("jdk8+", jdk, properties("imp.version=1")) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) sets the property imp.version, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")),
+                        "<profiles>" + profile("jdk8+", jdk, managed(dep("g:b:9"))) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) manages 1 dependency" + applies);
+        // Maven rejects this entry where the profile is active
+        failures.put(project("g:bom:1", managed(dep("g:a:2")),
+                        "<profiles>" + profile("jdk8+", jdk, managed(dep("${nope}:b:9"))) + "</profiles>"),
+                "the profile jdk8+ of g:bom:1 (JDK [1.8,)) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("mac", "<os><family>mac</family></os>", managed(dep("g:b:1"), dep("g:c:1")))
+                        + "</profiles>"),
+                "the profile mac of g:bom:1 (OS) manages 2 dependencies" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:${v}")), "<profiles>"
+                        + profile("file", "<file><exists>${basedir}/x</exists></file>", properties("v=1"))
+                        + "</profiles>"),
+                "the profile file of g:bom:1 (file) sets the property v, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("java-vendor", "<property><name>!java.vendor</name></property>",
+                                managed(dep("g:vendor:1")))
+                        + "</profiles>"),
+                "the profile java-vendor of g:bom:1 (property !java.vendor) manages 1 dependency" + applies);
+        // also by a property that the JDK sets outside those prefixes, or that the mvn launcher sets
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("enc", "<property><name>native.encoding</name></property>", managed(dep("g:enc:1")))
+                        + "</profiles>"),
+                "the profile enc of g:bom:1 (property native.encoding) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=new"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("old-jdk", "<property><name>!native.encoding</name></property>", properties("x=old"))
+                        + "</profiles>"),
+                "the profile old-jdk of g:bom:1 (property !native.encoding) sets the property x, which the resolution "
+                        + "of g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", properties("cls=base"), managed(dep("g:a::${cls}:1")), "<profiles>"
+                        + profile("new", "<property><name>stdout.encoding</name></property>", properties("cls=new"))
+                        + "</profiles>"),
+                "the profile new of g:bom:1 (property stdout.encoding) sets the property cls, which the resolution of "
+                        + "g:bom:1 reads" + applies);
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("embedded", "<property><name>!classworlds.conf</name></property>",
+                                managed(dep("g:only-embedded:1")))
+                        + "</profiles>"),
+                "the profile embedded of g:bom:1 (property !classworlds.conf) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=cli"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("no-jansi", "<property><name>!library.jansi.path</name></property>",
+                                properties("x=embedded"))
+                        + "</profiles>"),
+                "the profile no-jansi of g:bom:1 (property !library.jansi.path) sets the property x, which the "
+                        + "resolution of g:bom:1 reads" + applies);
+        // and by packaging, which Maven 3.9 sets to the packaging of the project it builds, the one importing the BOM
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", managed(dep("g:a:1")), "<profiles>"
+                        + profile("by-pom", "<property><name>packaging</name><value>pom</value></property>",
+                                managed(dep("g:by-pom:1")))
+                        + "</profiles>"),
+                "the profile by-pom of g:bom:1 (property packaging=pom) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=1"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("no-packaging", "<property><name>!packaging</name></property>", properties("x=2"))
+                        + "</profiles>"),
+                "the profile no-packaging of g:bom:1 (property !packaging) sets the property x, which the resolution "
+                        + "of g:bom:1 reads" + applies);
+        // active by default, but not in a pom where a profile is active on every machine
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("on", "<property><name>!off</name></property>", properties("y=1"))
+                        + profile("dj", "<activeByDefault>true</activeByDefault>" + jdk, properties("x=1"))
+                        + "</profiles>"),
+                "the profile dj of g:bom:1 (JDK [1.8,)) sets the property x, which the resolution of g:bom:1 reads"
+                        + applies);
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void failsWhereAProfileThatDependsOnTheMachineDropsAProfileActiveByDefaultThatChangesTheResult()
+            throws IOException {
+        // Maven applies the profiles active by default of a pom only where no other profile of the pom is activated
+        String jdk = "<jdk>[1.8,)</jdk>";
+        String byDefault = "<activeByDefault>true</activeByDefault>";
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1", properties("x=0"), "<profiles>"
+                + profile("d", byDefault, properties("x=1")) + profile("j", jdk) + "</profiles>"));
+        String drops = ", and Maven drops it on the machines that activate the profile j of ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>" + profile("d", byDefault,
+                        properties("x=1")) + profile("j", jdk, properties("unrelated=2")) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:${x}"))),
+                "the profile d of g:parent:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:parent:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>" + profile("d", byDefault,
+                        managed(dep("g:only-default:5"))) + profile("j", jdk) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, manages 1 dependency" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", properties("x=0"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("d", byDefault, properties("x=1"))
+                        + profile("enc", "<property><name>native.encoding</name></property>",
+                                properties("unrelated=1")) + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property x, which the resolution of g:bom:1 "
+                        + "reads, and Maven drops it on the machines that activate the profile enc of g:bom:1 "
+                        + "(property native.encoding)");
+        // a profile active by default with a JDK condition is activated by it, and drops the other one
+        failures.put(project("g:bom:1", managed(dep("g:a:${x}-${y}")), "<profiles>"
+                        + profile("j", byDefault + jdk, properties("x=j")) + profile("d", byDefault, properties("y=d"))
+                        + "</profiles>"),
+                "the profile d of g:bom:1, active by default, sets the property y, which the resolution of g:bom:1 "
+                        + "reads" + drops + "g:bom:1 (JDK [1.8,))");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+
+        // alone, that one applies on every machine, whether its condition holds or not
+        assertEquals(Map.of("g:a", "j"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:${x}")),
+                "<profiles>" + profile("j", byDefault + "<jdk>[99,)</jdk>", properties("x=j")) + "</profiles>"))));
+        // and a profile active by default that changes nothing the resolution reads may be dropped
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:1")),
+                "<profiles>" + profile("d", byDefault, properties("unused=1")) + profile("j", jdk) + "</profiles>"))));
+    }
+
+    @Test
+    void failsOnAPropertyCycleThatProfilesDependingOnTheMachineForm() throws IOException {
+        // Maven interpolates every property of the model on the machines that activate them too, where also two of
+        // them may form one, or one may drop a profile active by default that replaces a property of a cycle
+        String byDefault = "<activeByDefault>true</activeByDefault>";
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1",
+                "<profiles>" + profile("j8", "<jdk>[1.8,)</jdk>", properties("c1=${c2}")) + "</profiles>"));
+        String cycle = "g:bom:1: the property references form a cycle: ";
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("j", "<jdk>[1.8,)</jdk>", properties("c1=${c2}", "c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile j of g:bom:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("jdk99", "<jdk>[99,)</jdk>", properties("b=${b}")) + "</profiles>"),
+                cycle + "b -> b, on the machines that activate the profile jdk99 of g:bom:1 (JDK [99,))");
+        failures.put(project("g:bom:1", managed(dep("g:a:1")), "<profiles>"
+                        + profile("j8", "<jdk>[1.8,)</jdk>", properties("c1=${c2}"))
+                        + profile("j11", "<jdk>[11,)</jdk>", properties("c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile j8 of g:bom:1 (JDK [1.8,)) and the "
+                        + "profile j11 of g:bom:1 (JDK [11,))");
+        failures.put(project(":bom:", parent("g:parent:1"), managed(dep("g:a:1")), "<profiles>"
+                        + profile("unix", "<os><family>unix</family></os>", properties("c2=${c1}")) + "</profiles>"),
+                cycle + "c2 -> c1 -> c2, on the machines that activate the profile unix of g:bom:1 (OS) and the "
+                        + "profile j8 of g:parent:1 (JDK [1.8,))");
+        failures.put(project("g:bom:1", properties("x=${y}", "y=${x}"), managed(dep("g:a:1")), "<profiles>"
+                        + profile("d", byDefault, properties("y=plain")) + profile("j", "<jdk>[1.8,)</jdk>")
+                        + "</profiles>"),
+                cycle + "y -> x -> y, on the machines that activate the profile j of g:bom:1 (JDK [1.8,))");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+
+        // more than ten such profiles are too many combinations to try
+        StringBuilder many = new StringBuilder("<profiles>");
+        for (int i = 1; i <= 11; i++) {
+            many.append(profile("jdk" + i, "<jdk>[" + i + ",)</jdk>", properties("p" + i + "=${q}")));
+        }
+        String tooMany = assertThrows(IOException.class, () -> resolve(repo, project("g:bom:1",
+                managed(dep("g:a:1")), many + "</profiles>"))).getMessage();
+        assertTrue(tooMany.startsWith("g:bom:1: 11 profiles that depend on the machine could add a property reference "
+                + "cycle, too many to try each combination: profile jdk1 of g:bom:1 (JDK [1,)), "), tooMany);
+        StringBuilder ten = new StringBuilder("<profiles>");
+        for (int i = 1; i <= 10; i++) {
+            ten.append(profile("jdk" + i, "<jdk>[" + i + ",)</jdk>", properties("p" + i + "=${q}")));
+        }
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", managed(dep("g:a:1")),
+                ten + "</profiles>"))));
+
+        // values with references that form no cycle in any combination
+        assertEquals(Map.of("g:a", "1"), versions(resolve(repo, project("g:bom:1", properties("b=1", "x=${b}"),
+                managed(dep("g:a:1")), "<profiles>" + profile("j8", "<jdk>[1.8,)</jdk>", properties("c=${b}"))
+                        + profile("j11", "<jdk>[11,)</jdk>", properties("b=2", "d=${c}")) + "</profiles>"))));
     }
 
     @Test
@@ -991,7 +1323,14 @@ class BomResolverTest {
 
     @Test
     void aThreadWaitingForAPomWhoseFetchThrowsAnErrorFailsInsteadOfWaitingForever() throws Exception {
-        StackOverflowError error = new StackOverflowError("deep pom");
+        assertEquals("deep pom", failureOfAWaitingThread(new StackOverflowError("deep pom")).getMessage());
+        // as the JVM throws it: the message says what it is
+        assertEquals("java.lang.StackOverflowError",
+                failureOfAWaitingThread(new StackOverflowError()).getMessage());
+    }
+
+    /// What a resolution that waits for the fetch of a shared parent gets when that fetch throws the given error.
+    private static IOException failureOfAWaitingThread(Error error) throws Exception {
         CountDownLatch fetching = new CountDownLatch(1);
         CountDownLatch fail = new CountDownLatch(1);
         BomResolver resolver = new BomResolver((groupId, artifactId, version) -> {
@@ -1026,6 +1365,7 @@ class BomResolverTest {
                     "the waiting resolution ends").getCause();
             assertTrue(waited instanceof IOException, waited.toString());
             assertSame(error, waited.getCause());
+            return (IOException) waited;
         } finally {
             fail.countDown();
             executor.shutdownNow();
