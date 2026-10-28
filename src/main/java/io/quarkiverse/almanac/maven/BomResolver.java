@@ -193,7 +193,8 @@ public final class BomResolver {
     /// not know: Maven keeps such a reference as written only on some machines, or not at all.
     private enum Elsewhere {
         /// An element of the model other than the coordinates, the packaging and the parent's coordinates, such as
-        /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets).
+        /// `${project.name}`, `${name}` or `${project.build.finalName}` (which the super POM sets), or what a getter
+        /// gives of the model or of a text element: `${class}`, `${version.empty}`.
         MODEL,
         /// A property of the JVM, of the environment or of Maven itself: `${java.version}`, `${env.HOME}`.
         MACHINE,
@@ -204,11 +205,16 @@ public final class BomResolver {
     /// The text elements of Maven's model that the resolution does not read, which a reference reads as a whole.
     private static final Set<String> MODEL_TEXT = Set.of("childProjectUrlInheritAppendPath", "description", "id",
             "inceptionYear", "modelEncoding", "modelVersion", "name", "url");
-    /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`.
-    private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "contributors", "dependencies",
-            "dependencyManagement", "developers", "distributionManagement", "issueManagement", "licenses",
-            "mailingLists", "modules", "organization", "pluginRepositories", "pomFile", "prerequisites", "profiles",
-            "projectDirectory", "properties", "reporting", "reports", "repositories", "scm");
+    /// The text elements of Maven's model that the resolution reads.
+    private static final Set<String> COORDINATES = Set.of("groupId", "artifactId", "version", "packaging");
+    /// What a reference reads of a text element's String after a dot, as in `${version.empty}`: its getters.
+    private static final Set<String> STRING_GETTERS = Set.of("blank", "bytes", "class", "empty");
+    /// The elements of Maven's model with parts, which a reference reads along a path such as `build.finalName`, and
+    /// the model's class (`${class}`, `${project.class.simpleName}`).
+    private static final Set<String> MODEL_PARTS = Set.of("build", "ciManagement", "class", "contributors",
+            "dependencies", "dependencyManagement", "developers", "distributionManagement", "issueManagement",
+            "licenses", "mailingLists", "modules", "organization", "pluginRepositories", "pomFile", "prerequisites",
+            "profiles", "projectDirectory", "properties", "reporting", "reports", "repositories", "scm");
 
     /// What the resolution needs of a pom's effective model.
     ///
@@ -572,16 +578,20 @@ public final class BomResolver {
 
     /// Where Maven may find a value for the reference `${name}` that no property defines, a value that the resolution
     /// does not know; null when Maven keeps such a reference as written in every plain build. Maven reads the model
-    /// along the reference's path, with or without the `project.` or `pom.` prefix (a text element only as a whole:
-    /// `${version.jdk-misc}` reads nothing), and an unprefixed reference also among the properties of the machine.
+    /// along the reference's path, with or without the `project.` or `pom.` prefix (a text element as a whole or
+    /// through a getter of its String, `${version.empty}`, while `${version.jdk-misc}` reads nothing), and an
+    /// unprefixed reference also among the properties of the machine.
     ///
     /// @param parent     whether the model has a parent
     /// @param machineSet the properties that profiles depending on the machine set
     private static Elsewhere elsewhere(String name, boolean parent, Set<String> machineSet) {
         String path = Interpolator.unprefixed(name);
-        String element = path.split("[.\\[(]", 2)[0];
+        String[] parts = path.split("[.\\[(]", 3);
+        String element = parts[0];
+        boolean text = MODEL_TEXT.contains(element) || COORDINATES.contains(element);
         if (MODEL_PARTS.contains(element) || element.equals(path) && MODEL_TEXT.contains(element)
-                || element.equals("parent") && parent) {
+                || element.equals("parent") && parent || text && parts.length > 1
+                && path.charAt(element.length()) == '.' && STRING_GETTERS.contains(parts[1])) {
             return Elsewhere.MODEL;
         }
         if (path.equals(name) && MACHINE_PROPERTIES.stream().anyMatch(name::startsWith)) {

@@ -515,14 +515,14 @@ class BomResolverTest {
 
     @Test
     void keepsAsWrittenTheReferencesThatMavenKeepsOnEveryMachine() throws IOException {
-        // Maven reads a text element of the model only as a whole, and a project or parent element that is not there
-        // gives nothing; without project directory it knows no basedir either
+        // Maven reads a text element of the model only as a whole or through a getter of its String, and a project or
+        // parent element that is not there gives nothing; without project directory it knows no basedir either
         Repo repo = new Repo().add("org.imp:i:1", project("org.imp:i:1",
                 managed(dep("g:a:${java.version}"), dep("g:b:2"))));
         String bom = project("io.quarkus:quarkus-bom:1",
                 "<name>The BOM</name>",
                 managed(dep("org.jboss:jdk-misc:${version.jdk-misc}"), dep("g:name-x:${name.x}"),
-                        dep("g:version-jdk:${project.version.jdk}"),
+                        dep("g:version-jdk:${project.version.jdk}"), dep("g:class-name:${version.class-name}"),
                         dep("org.apache.maven.shared:maven-artifact-transfer:${maven-artifact-transfer.version}"),
                         dep("org.glassfish.web:el-impl:${el-impl.version}"), dep("g:basedir:${project.basedir}"),
                         dep("g:basedir2:${basedir}"), dep("g:foo:${project.foo}"), dep("g:parent:${parent.version}"),
@@ -533,9 +533,10 @@ class BomResolverTest {
         BomResolver.Result result = resolve(repo, bom);
 
         assertEquals("${version.jdk-misc}", versions(result).get("org.jboss:jdk-misc"));
+        assertEquals("${version.class-name}", versions(result).get("g:class-name"));
         assertEquals("${parent.version}", versions(result).get("g:parent"));
         assertEquals("1.0", versions(result).get("g:a"), "the importer manages it: the import's machine value is out");
-        assertEquals(10, result.unresolved().size());
+        assertEquals(11, result.unresolved().size());
     }
 
     @Test
@@ -558,6 +559,12 @@ class BomResolverTest {
                 "the managed dependency g:a (declared in g:bom:1) keeps ${pom.description}" + model);
         failures.put(project("g:bom:1", parent("g:parent:1"), managed(dep("g:a:${project.parent.relativePath}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${project.parent.relativePath}" + model);
+        // what Java's reflection gives: Object.getClass() of the model, the getters of a text element's String
+        for (String reference : List.of("${class}", "${project.class.simpleName}", "${version.empty}",
+                "${pom.name.bytes}", "${groupId.blank}", "${packaging.class}", "${artifactId.class.simpleName}")) {
+            failures.put(project("g:bom:1", "<name>N</name>", managed(dep("g:a:" + reference))),
+                    "the managed dependency g:a (declared in g:bom:1) keeps " + reference + model);
+        }
         failures.put(project("g:bom:1", managed(dep("g:a:${java.version}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${java.version}" + machine);
         failures.put(project("g:bom:1", managed(dep("g:a:${env.HOME}"), dep("g:b::${user.home}:1"))),
