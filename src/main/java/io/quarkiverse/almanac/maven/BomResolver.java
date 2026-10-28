@@ -802,7 +802,8 @@ public final class BomResolver {
     }
 
     /// The outcome of the fetch of another thread; its failure as it was thrown, so that a stop of the requests
-    /// ([Http.StoppedException]) stays one.
+    /// ([Http.StoppedException]) stays one. Another failure, a [RuntimeException] or an [Error], comes in an
+    /// IOException with its message, or with its class name when it has none (a JVM's StackOverflowError).
     private static <T> T await(CompletableFuture<T> future, String id) throws IOException {
         try {
             return future.get();
@@ -813,7 +814,8 @@ public final class BomResolver {
             if (e.getCause() instanceof IOException cause) {
                 throw cause;
             }
-            throw new IOException(e.getCause().getMessage(), e.getCause());
+            Throwable failure = e.getCause();
+            throw new IOException(Objects.requireNonNullElse(failure.getMessage(), failure.toString()), failure);
         }
     }
 

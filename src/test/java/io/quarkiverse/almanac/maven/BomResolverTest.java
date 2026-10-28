@@ -1203,7 +1203,14 @@ class BomResolverTest {
 
     @Test
     void aThreadWaitingForAPomWhoseFetchThrowsAnErrorFailsInsteadOfWaitingForever() throws Exception {
-        StackOverflowError error = new StackOverflowError("deep pom");
+        assertEquals("deep pom", failureOfAWaitingThread(new StackOverflowError("deep pom")).getMessage());
+        // as the JVM throws it: the message says what it is
+        assertEquals("java.lang.StackOverflowError",
+                failureOfAWaitingThread(new StackOverflowError()).getMessage());
+    }
+
+    /// What a resolution that waits for the fetch of a shared parent gets when that fetch throws the given error.
+    private static IOException failureOfAWaitingThread(Error error) throws Exception {
         CountDownLatch fetching = new CountDownLatch(1);
         CountDownLatch fail = new CountDownLatch(1);
         BomResolver resolver = new BomResolver((groupId, artifactId, version) -> {
@@ -1238,6 +1245,7 @@ class BomResolverTest {
                     "the waiting resolution ends").getCause();
             assertTrue(waited instanceof IOException, waited.toString());
             assertSame(error, waited.getCause());
+            return (IOException) waited;
         } finally {
             fail.countDown();
             executor.shutdownNow();
