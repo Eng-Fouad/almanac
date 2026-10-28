@@ -616,6 +616,15 @@ class BomResolverTest {
         failures.put(project("g:bom:1", managed(dep("g:a::${stdout.encoding}:1"))),
                 "the managed dependency g:a:${stdout.encoding} (declared in g:bom:1) keeps ${stdout.encoding}"
                         + machine);
+        // in a scope too, which decides whether an entry of type pom is an import: <name>import</name> makes this one
+        // an import in Maven
+        for (String scope : List.of("${project.name}", "${env.SCOPE}")) {
+            failures.put(project("g:bom:1", "<name>import</name>", managed("<dependency><groupId>t</groupId>"
+                            + "<artifactId>imp</artifactId><version>1</version><type>pom</type><scope>" + scope
+                            + "</scope></dependency>")),
+                    "the managed dependency t:imp:pom (declared in g:bom:1) keeps " + scope
+                            + (scope.startsWith("${env.") ? machine : model));
+        }
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }

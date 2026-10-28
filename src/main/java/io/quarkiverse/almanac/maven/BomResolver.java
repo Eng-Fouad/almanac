@@ -58,10 +58,11 @@ import java.util.regex.Pattern;
 /// (Maven's validation of the model). A reference that no pom defines stays as written in a managed dependency's
 /// version, type or classifier, as in Maven's effective model: [Result#unresolved()] lists the entries that keep one,
 /// and [Result#describeUnresolved()] says where they come from. The resolution fails instead where Maven may give such
-/// a reference a value that it does not know ([Elsewhere]); where the result reads a property that refers to itself
-/// with more text (`version` = `x-${version}`), which Maven interpolates in place in an order that depends on the
-/// property names, so that it may read either value; and where a type or classifier keeps the text of
-/// [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell from the placeholder.
+/// a reference a value that it does not know ([Elsewhere]), there or in a scope, which decides whether an entry is an
+/// import; where the result reads a property that refers to itself with more text (`version` = `x-${version}`), which
+/// Maven interpolates in place in an order that depends on the property names, so that it may read either value; and
+/// where a type or classifier keeps the text of [BomParser#QUARKUS_VERSION_PLACEHOLDER], which an id could not tell
+/// from the placeholder.
 ///
 /// Known differences from Maven:
 /// - The resolution fails where Maven may build: for a part of the model or a property of the machine that Maven
@@ -564,8 +565,10 @@ public final class BomResolver {
         return managed;
     }
 
-    /// Why Maven may give a reference that the version, type or classifier of an interpolated entry keeps a value that
-    /// the resolution does not know ([Managed#doubt()]); null when Maven keeps every one of them as written.
+    /// Why Maven may give a reference that the version, type, classifier or scope of an interpolated entry keeps a
+    /// value that the resolution does not know ([Managed#doubt()]); null when Maven keeps every one of them as written.
+    /// The scope counts too: it decides whether an entry of type `pom` is an import, and Maven's validation rejects a
+    /// system scope without systemPath.
     ///
     /// @param coordinates     the model that interpolated the entry
     /// @param parent          whether that model has a parent
@@ -573,7 +576,7 @@ public final class BomResolver {
     ///                        the first such profile
     private static String doubt(Managed entry, String coordinates, boolean parent,
             Map<String, String> machineProfiles) {
-        for (String value : new String[] {entry.version(), entry.type(), entry.classifier()}) {
+        for (String value : new String[] {entry.version(), entry.type(), entry.classifier(), entry.scope()}) {
             String where = mayResolve(value, coordinates, parent, machineProfiles);
             if (where != null) {
                 return where;
