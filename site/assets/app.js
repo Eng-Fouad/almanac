@@ -43,7 +43,8 @@ const KIND_TITLE = {
   patch: 'Patch version change', other: 'Only the version qualifier changed, or a version kept as written (${...})',
   downgrade: 'The newer release manages an older version',
 };
-const STATUS_TONE = { stable: 'neu', preview: 'chg', experimental: 'dep', deprecated: 'rem' };
+/** An extension's status takes quarkus.io's tag colour for it, as on quarkus.io/extensions. */
+const STATUS_TONE = { stable: 'stable', preview: 'preview', experimental: 'experimental', deprecated: 'deprecated' };
 const TYPE_LABEL = { property: 'prop', artifact: 'dep', extension: 'ext' };
 const SOURCE_TITLE = {
   model: 'model: read from the official config model shipped in the jars (3.25+)',
@@ -60,14 +61,18 @@ const ICONS = {
   chevron: 'M4.5 6l3.5 3.5L11.5 6',
   external: 'M9.5 2.5h4v4M13.5 2.5L7.5 8.5M11.5 9v4.5h-9v-9H7',
   theme: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 2v12',
+  sun: 'M8 5.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 0 0 0-5.5zM8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06',
+  moon: 'M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z',
   globe: 'M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM1.5 8h13M8 1.5c1.8 1.9 2.7 4.1 2.7 6.5S9.8 12.6 8 14.5M8 1.5C6.2 3.4 5.3 5.6 5.3 8s.9 4.6 2.7 6.5',
   menu: 'M2.5 4.5h11M2.5 8h11M2.5 11.5h11',
 };
 
 /**
- * quarkus.io's main menu, as its own navigation bar has it (the extensions site, quarkus.io/extensions, keeps such a
- * copy too). An entry is [label, link, current]: a path is on quarkus.io; the almanac is listed under Learn, next to
- * the release notes.
+ * quarkus.io's main menu, copied from its own navigation bar (#main-nav on https://quarkus.io/, last compared on
+ * 2026-10-28). quarkus.io/extensions keeps a copy of its own too (src/components/headers/navigation.js in
+ * quarkusio/extensions), and copies drift: compare again when quarkus.io changes its menu. An entry is
+ * [label, link, current]: a path is on quarkus.io; the almanac is listed under Learn, next to the release notes.
+ * quarkus.io folds "Using Spring?" and "AI" into submenus; here they head their groups.
  */
 const QUARKUS_IO = 'https://quarkus.io';
 const QUARKUS_MENU = [
@@ -559,6 +564,7 @@ function pageTitle(r) {
 async function render({ keep = null } = {}) {
   const seq = ++renderSeq;
   const r = route;
+  if (!keep) shell.closeNav?.();
   updateNav(r);
   const main = shell.main;
   main.setAttribute('aria-busy', 'true');
@@ -643,16 +649,23 @@ function buildShell() {
 }
 
 /**
- * quarkus.io's navigation bar: the logo, the main menu (a disclosure button per menu; pointer devices also open one on
- * hover), Start Coding, the languages and the theme. Below 960 px the menu folds behind one button. Escape closes the
- * open menu and returns to its button; a click elsewhere closes it.
+ * quarkus.io's navigation bar, as quarkus.io and quarkus.io/extensions have it: the logo, the main menu, Start Coding,
+ * the languages and the theme. Each menu is a disclosure button: a click (or Enter) opens it and keeps it open, and a
+ * mouse resting on a menu opens it too, as on quarkus.io, for as long as it stays there (from 1024 px, where the menu
+ * is on the bar; below, it folds behind one button). Whatever is open closes on Escape (back to its button when the
+ * focus was in it), on a click elsewhere, when the focus leaves it, and on a change of page.
  */
 function globalNav() {
   const menus = [];
+  const pinned = new Set(); // menus opened by a click, which stay open when the mouse leaves them
+  const wide = window.matchMedia ? window.matchMedia('(min-width: 1024px)') : null;
+  let hoverTimer = 0;
   const isOpen = (li) => li.classList.contains('is-open');
-  const setOpen = (li, open) => {
+  const setOpen = (li, open, pin = false) => {
     li.classList.toggle('is-open', open);
-    li.querySelector(':scope > .gnav-btn').setAttribute('aria-expanded', String(open));
+    li.firstElementChild.setAttribute('aria-expanded', String(open));
+    if (open && pin) pinned.add(li);
+    else pinned.delete(li);
   };
   const closeAll = (except) => {
     for (const li of menus) if (li !== except && isOpen(li)) setOpen(li, false);
@@ -662,15 +675,32 @@ function globalNav() {
     const btn = h('button', { type: 'button', class: 'gnav-btn', 'aria-expanded': 'false', 'aria-controls': `gnav-${id}` },
       label, icon('chevron', 'gnav-chev'));
     const panel = h('div', { class: 'gnav-menu', id: `gnav-${id}` },
-      groups.map((g) => frag(
-        g.title ? h('p', { class: 'gnav-group' }, g.title) : null,
-        h('ul', null, g.items.map(([text, href, current]) =>
+      groups.map((g, n) => frag(
+        g.title ? h('p', { class: 'gnav-group', id: `gnav-${id}-${n}` }, g.title) : null,
+        h('ul', { 'aria-labelledby': g.title ? `gnav-${id}-${n}` : null }, g.items.map(([text, href, current]) =>
           h('li', null, h('a', { href: link(href), 'aria-current': current ? 'page' : null }, text)))))));
     const li = h('li', { class: 'gnav-item' }, btn, panel);
     btn.addEventListener('click', () => {
-      const open = !isOpen(li);
+      clearTimeout(hoverTimer);
+      const open = !pinned.has(li); // a menu the mouse opened stays open once clicked
       closeAll(li);
-      setOpen(li, open);
+      setOpen(li, open, true);
+    });
+    li.addEventListener('pointerenter', (e) => {
+      if (e.pointerType !== 'mouse' || !wide?.matches) return;
+      clearTimeout(hoverTimer);
+      if (isOpen(li)) return;
+      closeAll(li);
+      setOpen(li, true);
+    });
+    li.addEventListener('pointerleave', (e) => {
+      if (e.pointerType !== 'mouse' || !isOpen(li) || pinned.has(li)) return;
+      hoverTimer = setTimeout(() => {
+        if (!pinned.has(li) && !li.contains(document.activeElement)) setOpen(li, false);
+      }, 250);
+    });
+    li.addEventListener('focusout', (e) => {
+      if (isOpen(li) && e.relatedTarget instanceof Node && !li.contains(e.relatedTarget)) setOpen(li, false);
     });
     menus.push(li);
     return li;
@@ -679,29 +709,50 @@ function globalNav() {
     QUARKUS_MENU.map((m) => menu(m.title.toLowerCase(), m.title, m.groups)),
     h('li', { class: 'gnav-cta-item' }, h('a', { class: 'gnav-cta', href: 'https://code.quarkus.io/' }, 'Start Coding')),
     menu('languages', frag(icon('globe', 'gnav-globe'), h('span', { class: 'sr-only' }, 'Languages')),
-      [{ items: QUARKUS_LANGUAGES }]));
+      [{ items: QUARKUS_LANGUAGES }]),
+    h('li', { class: 'gnav-theme-item' }, themeToggle()));
   const burger = h('button', { type: 'button', class: 'gnav-burger', 'aria-expanded': 'false', 'aria-controls': 'gnav-list' },
     icon('menu'), h('span', { class: 'sr-only' }, 'Quarkus menu'));
   const bar = h('nav', { class: 'gbar', 'aria-label': 'Quarkus' },
-    h('div', { class: 'wrap gbar-in' },
-      h('a', { class: 'brand-logo', href: `${QUARKUS_IO}/` }, h('img', { src: QUARKUS_LOGO, alt: 'Quarkus', width: '197', height: '30' })),
-      burger, list, themeToggle()));
-  burger.addEventListener('click', () => {
-    const open = !bar.classList.contains('is-open');
+    h('div', { class: 'gbar-in' },
+      h('a', { class: 'brand-logo', href: `${QUARKUS_IO}/` }, h('img', { src: QUARKUS_LOGO, alt: 'Quarkus', width: '208', height: '32' })),
+      burger, list));
+  const panelOpen = () => bar.classList.contains('is-open');
+  const setPanel = (open) => {
     bar.classList.toggle('is-open', open);
     burger.setAttribute('aria-expanded', String(open));
     if (!open) closeAll();
+  };
+  const closeNav = () => {
+    clearTimeout(hoverTimer);
+    closeAll();
+    setPanel(false);
+  };
+  shell.closeNav = closeNav;
+  burger.addEventListener('click', () => setPanel(!panelOpen()));
+  // a link followed from the menu, even to the page already shown, leaves it closed
+  list.addEventListener('click', (e) => {
+    if (e.target instanceof Element && e.target.closest('a')) closeNav();
+  });
+  bar.addEventListener('focusout', (e) => {
+    if (panelOpen() && e.relatedTarget instanceof Node && !bar.contains(e.relatedTarget)) setPanel(false);
   });
   document.addEventListener('click', (e) => {
-    if (!bar.contains(e.target)) closeAll();
+    for (const li of menus) if (isOpen(li) && !li.contains(e.target)) setOpen(li, false);
+    if (panelOpen() && !list.contains(e.target) && !burger.contains(e.target)) setPanel(false);
   });
   document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
     const open = menus.find(isOpen);
-    if (e.key === 'Escape' && open) {
-      setOpen(open, false);
-      open.querySelector(':scope > .gnav-btn').focus();
-    }
+    const scope = open ?? (panelOpen() ? bar : null);
+    if (!scope) return;
+    const focusWasIn = scope.contains(document.activeElement);
+    if (open) setOpen(open, false);
+    else setPanel(false);
+    if (focusWasIn) (open ? open.firstElementChild : burger).focus();
   });
+  // the menu moves between the bar and the folded panel: start closed in either
+  wide?.addEventListener?.('change', closeNav);
   return bar;
 }
 
@@ -740,38 +791,34 @@ function updateDataNotice() {
   ].filter(Boolean).join(' · ');
 }
 
+/**
+ * The colour theme, kept as quarkus.io keeps it: light, dark or the system's, stored as 'color-theme' (light when
+ * nothing is stored), so that one choice holds on quarkus.io and here alike once the almanac is served from there.
+ * theme.js applies it before the page paints; the button steps through light, dark and system, as quarkus.io's does.
+ */
 function themeToggle() {
-  const modes = ['auto', 'light', 'dark'];
-  let mode = 'auto';
-  let touched = false;
-  try {
-    mode = window.localStorage.getItem('quarkus-almanac-theme') || 'auto';
-  } catch {
-    /* storage may be blocked */
-  }
-  if (!modes.includes(mode)) mode = 'auto';
-  const label = h('span', { class: 'theme-label' });
-  const btn = h('button', { type: 'button', class: 'btn btn-quiet theme-toggle' }, icon('theme'), label);
+  const modes = ['light', 'dark', 'system'];
+  const names = { light: 'light', dark: 'dark', system: 'system preferences' };
+  const glyphs = { light: 'sun', dark: 'moon', system: 'theme' };
+  const root = document.documentElement;
+  let mode = modes.includes(root.dataset.theme) ? root.dataset.theme : 'light';
+  const btn = h('button', { type: 'button', class: 'gnav-theme' });
   const apply = () => {
-    const root = document.documentElement;
-    if (mode === 'auto') {
-      if (touched) root.removeAttribute('data-theme');
-    } else {
-      root.setAttribute('data-theme', mode);
-      touched = true;
-    }
-    label.textContent = mode === 'auto' ? 'Auto' : mode === 'light' ? 'Light' : 'Dark';
-    btn.setAttribute('aria-label', `Colour theme: ${label.textContent}. Activate to switch.`);
-    btn.title = 'Switch colour theme (auto, light, dark)';
+    root.dataset.theme = mode;
+    const next = names[modes[(modes.indexOf(mode) + 1) % modes.length]];
+    btn.replaceChildren(icon(glyphs[mode]));
+    btn.setAttribute('aria-label', `Colour scheme: ${names[mode]}. Activate for ${next}.`);
+    btn.title = `Colour scheme: ${names[mode]}; next: ${next}`;
   };
   btn.addEventListener('click', () => {
     mode = modes[(modes.indexOf(mode) + 1) % modes.length];
     try {
-      window.localStorage.setItem('quarkus-almanac-theme', mode);
+      window.localStorage.setItem('color-theme', mode);
     } catch {
-      /* ignore */
+      /* storage may be blocked */
     }
     apply();
+    announce(`Colour scheme: ${names[mode]}`);
   });
   apply();
   return btn;
@@ -1285,9 +1332,10 @@ function errorView(err) {
     render();
   });
   return frag(
-    h('p', { class: 'kicker' }, 'Error'),
-    h('h1', { class: 'page-title', tabindex: '-1' }, 'The almanac data could not be loaded'),
-    h('p', { class: 'lede' }, err && err.message ? err.message : String(err)),
+    h('header', { class: 'page-head band' },
+      h('p', { class: 'kicker' }, 'Error'),
+      h('h1', { class: 'page-title', tabindex: '-1' }, 'The almanac data could not be loaded'),
+      h('p', { class: 'lede' }, err && err.message ? err.message : String(err))),
     attempts.length ? h('ul', { class: 'attempts' }, attempts.map((a) => h('li', null, h('code', null, a)))) : null,
     h('p', null, 'If you opened index.html straight from disk, serve the site folder over HTTP instead, for example ', h('code', null, 'jwebserver -d site'), '.'),
     retry);
@@ -1295,10 +1343,11 @@ function errorView(err) {
 
 function notFoundView(title, message, extra) {
   return frag(
-    h('p', { class: 'kicker' }, 'Not found'),
-    h('h1', { class: 'page-title', tabindex: '-1' }, title),
-    message ? h('p', { class: 'lede' }, message) : null,
-    extra ?? null,
+    h('header', { class: 'page-head band' },
+      h('p', { class: 'kicker' }, 'Not found'),
+      h('h1', { class: 'page-title', tabindex: '-1' }, title),
+      message ? h('p', { class: 'lede' }, message) : null,
+      extra ?? null),
     h('p', null, h('a', { href: '#/' }, 'Compare two releases'), ' · ', h('a', { href: '#/versions' }, 'All releases')));
 }
 

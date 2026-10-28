@@ -3,7 +3,8 @@
  * The look of quarkus.io, whose sub-site this is meant to be: Open Sans, Roboto Mono for anything a developer would
  * type (property names, versions, coordinates), the black navigation bar with the Quarkus logo, navy title bands,
  * quarkus.io's link, button and tag colours, and its dark theme.
- * Colours are tokens on :root only; dark values follow the light/dark pattern.
+ * Colours are tokens on :root only. The theme is quarkus.io's: light, dark or the system's, which theme.js puts on the
+ * root as data-theme before the page paints. Paper always takes the light colours.
  */
 
 /* ------------------------------------------------------------------ tokens */
@@ -54,16 +55,27 @@
   --nav-ink: #ffffff;
   --nav-muted: #c8c8c8;
   --nav-accent: #4695eb;
-  --nav-cta-hover: #1259a5;
+  --nav-hover-bg: #1259a5;
+  --nav-panel: #333333;
+  --nav-panel-line: #555555;
+  --nav-fold: #222222;
   --band: #0d1c2c;
   --band-ink: #ffffff;
   --band-muted: #b9c7d6;
   --band-accent: #9bcafa;
+  --band-ok: #63d397;
   --primary: #0b58ab;
-  --primary-hover: #094a8f;
+  /* quarkus.io's buttons turn red under the pointer (#ff004a); a darker red keeps the white text at 4.5:1 */
+  --primary-hover: #cc0000;
   --primary-ink: #ffffff;
+  /* quarkus.io's tags for an extension's status (#4695eb, #f18f01, #ff004a, #6a737d), each at 4.5:1 with its text:
+     a darker shade of the stable blue and the experimental red under white, dark text on the preview orange */
+  --tag-ink: #ffffff;
   --tag-stable: #1259a5;
   --tag-preview: #f18f01;
+  --tag-preview-ink: #121212;
+  --tag-experimental: #e0003f;
+  --tag-deprecated: #6a737d;
   --chip-bg: #eef2f8;
   --chip-ink: #4a5568;
   --chip-line: #dde3ed;
@@ -75,16 +87,17 @@
   --radius: 10px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+/* dark: chosen, or the system's when the reader chose that; never on paper */
+@media screen and (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
     color-scheme: dark;
     --bg: #121212;
     --bg-raised: #1e1e1e;
     --bg-sunken: #0f0f0f;
     --bg-hover: #2a2a2a;
-    --ink: #e6e6e6;
-    --ink-2: #c4c4c4;
-    --muted: #a0a0a0;
+    --ink: #b5b5b5;
+    --ink-2: #a8a8a8;
+    --muted: #9c9c9c;
     --faint: #8f8f8f;
     --rule: #333333;
     --rule-2: #555555;
@@ -119,60 +132,60 @@
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 32px rgb(0 0 0 / 50%);
     --band: #070f17;
     --band-muted: #a9b8c7;
-    --primary-hover: #1268c4;
-    --chip-bg: #1e2733;
-    --chip-ink: #c3cbd6;
-    --chip-line: #2f3b4a;
+    --chip-bg: #2a2a2a;
+    --chip-ink: #b0b8c4;
+    --chip-line: #3a3a3a;
   }
 }
 
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #121212;
-  --bg-raised: #1e1e1e;
-  --bg-sunken: #0f0f0f;
-  --bg-hover: #2a2a2a;
-  --ink: #e6e6e6;
-  --ink-2: #c4c4c4;
-  --muted: #a0a0a0;
-  --faint: #8f8f8f;
-  --rule: #333333;
-  --rule-2: #555555;
-  --rule-strong: #b5b5b5;
-  --accent: #9bcafa;
-  --accent-hover: #c3e0fd;
-  --accent-ink: #121212;
-  --accent-soft: #0d1c2c;
-  --focus: #9bcafa;
-  --link-hover: #ff6b6b;
-  --sub-title: #9bcafa;
-  --mark: #5a4b0c;
-  --add: #63d397;
-  --add-bg: #0f2a1b;
-  --add-line: #25583b;
-  --rem: #ff958a;
-  --rem-bg: #35140f;
-  --rem-line: #6f2b23;
-  --chg: #f0c252;
-  --chg-bg: #2c210a;
-  --chg-line: #5f4816;
-  --dep: #cfa7ff;
-  --dep-bg: #251a39;
-  --dep-line: #4d3672;
-  --maj: #ffab70;
-  --maj-ink: #1b0e04;
-  --neu: #b6c0cd;
-  --neu-bg: #1c222a;
-  --neu-line: #3a434f;
-  --lane-1: #13263b;
-  --lane-2: #1b3a5c;
-  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 32px rgb(0 0 0 / 50%);
-  --band: #070f17;
-  --band-muted: #a9b8c7;
-  --primary-hover: #1268c4;
-  --chip-bg: #1e2733;
-  --chip-ink: #c3cbd6;
-  --chip-line: #2f3b4a;
+@media screen {
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121212;
+    --bg-raised: #1e1e1e;
+    --bg-sunken: #0f0f0f;
+    --bg-hover: #2a2a2a;
+    --ink: #b5b5b5;
+    --ink-2: #a8a8a8;
+    --muted: #9c9c9c;
+    --faint: #8f8f8f;
+    --rule: #333333;
+    --rule-2: #555555;
+    --rule-strong: #b5b5b5;
+    --accent: #9bcafa;
+    --accent-hover: #c3e0fd;
+    --accent-ink: #121212;
+    --accent-soft: #0d1c2c;
+    --focus: #9bcafa;
+    --link-hover: #ff6b6b;
+    --sub-title: #9bcafa;
+    --mark: #5a4b0c;
+    --add: #63d397;
+    --add-bg: #0f2a1b;
+    --add-line: #25583b;
+    --rem: #ff958a;
+    --rem-bg: #35140f;
+    --rem-line: #6f2b23;
+    --chg: #f0c252;
+    --chg-bg: #2c210a;
+    --chg-line: #5f4816;
+    --dep: #cfa7ff;
+    --dep-bg: #251a39;
+    --dep-line: #4d3672;
+    --maj: #ffab70;
+    --maj-ink: #1b0e04;
+    --neu: #b6c0cd;
+    --neu-bg: #1c222a;
+    --neu-line: #3a434f;
+    --lane-1: #13263b;
+    --lane-2: #1b3a5c;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 32px rgb(0 0 0 / 50%);
+    --band: #070f17;
+    --band-muted: #a9b8c7;
+    --chip-bg: #2a2a2a;
+    --chip-ink: #b0b8c4;
+    --chip-line: #3a3a3a;
+  }
 }
 
 /* -------------------------------------------------------------------- base */
@@ -194,7 +207,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -422,9 +435,10 @@ a.ver:hover {
 
 /* ------------------------------------------------------------ masthead */
 
-/* Two bars: quarkus.io's navigation bar (black in both themes: the logo, the main menu, Start Coding, the languages
-   and the theme), then the almanac's own bar on the navy of the title bands. The controls on them take light text
-   tokens; the list of search results keeps the page's colours (see the surfaces below). */
+/* Two bars: quarkus.io's navigation bar, as quarkus.io and quarkus.io/extensions have it (black in both themes: the
+   logo, the main menu, Start Coding, the languages and the theme), then the almanac's own bar on the navy of the title
+   bands. The controls on them take light text tokens; the list of search results keeps the page's colours (see the
+   surfaces below). */
 .mast {
   --ink: var(--nav-ink);
   --ink-2: var(--nav-muted);
@@ -445,31 +459,37 @@ a.ver:hover {
   background: var(--nav-bg);
 }
 
+/* quarkus.io's measures: a 208 px logo, items of 1.2rem, sides of 4rem (13rem above 1366 px); below 1024 px the menu
+   folds behind one button and opens as a panel under the bar */
 .gbar-in {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px 14px;
-  min-height: 72px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 24px;
+  padding-bottom: 24px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 
 .brand-logo {
-  display: inline-flex;
+  display: flex;
   flex: none;
-  margin-right: auto;
+  align-items: center;
+  width: 208px;
+  height: 40px;
 }
 
 .brand-logo img {
   display: block;
-  width: auto;
-  height: 30px;
+  width: 100%;
+  height: auto;
 }
 
 .gnav {
   display: flex;
   align-items: center;
-  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -482,16 +502,15 @@ a.ver:hover {
 .gnav-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  min-height: 40px;
-  padding: 8px 10px;
-  font-size: 15px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
+  gap: 5px;
+  min-height: 56px;
+  padding: 16px 15px;
+  font: 400 19.2px/24px var(--font-sans);
   text-transform: uppercase;
   color: var(--nav-ink);
   background: none;
   border: 0;
+  border-radius: 0;
   cursor: pointer;
 }
 
@@ -501,45 +520,32 @@ a.ver:hover {
 }
 
 .gnav-chev {
-  width: 14px;
-  height: 14px;
-  transition: transform 0.15s ease;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.2s ease;
 }
 
-.gnav-item.is-open .gnav-chev {
+.gnav-item.is-open > .gnav-btn .gnav-chev {
   transform: rotate(180deg);
 }
 
 .gnav-globe {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
+/* a menu: quarkus.io's grey panel under its item, a link a row */
 .gnav-menu {
   display: none;
   position: absolute;
   top: 100%;
-  left: 0;
-  min-width: 220px;
-  padding: 8px 0;
-  background: var(--nav-bg);
-  border: 1px solid #333333;
-  border-radius: 0 0 var(--radius) var(--radius);
-}
-
-.gnav-item:last-of-type .gnav-menu {
-  left: auto;
   right: 0;
+  min-width: 275px;
+  background: var(--nav-panel);
 }
 
 .gnav-item.is-open > .gnav-menu {
   display: block;
-}
-
-@media (hover: hover) and (min-width: 960px) {
-  .gnav-item:hover > .gnav-menu {
-    display: block;
-  }
 }
 
 .gnav-menu ul {
@@ -548,46 +554,58 @@ a.ver:hover {
   list-style: none;
 }
 
-.gnav-menu a {
-  display: block;
-  padding: 7px 18px;
-  font-size: 13.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--nav-ink);
-  text-decoration: none;
-  white-space: nowrap;
+.gnav-menu li {
+  border-bottom: 1px solid var(--nav-panel-line);
 }
 
+.gnav-menu a {
+  display: block;
+  padding: 5px 10px;
+  font-size: 19.2px;
+  line-height: 28.8px;
+  text-align: right;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--nav-ink);
+  text-decoration: none;
+}
+
+/* quarkus.io fills the row under the pointer with #4695eb; a darker blue of its own keeps the white text at 4.5:1 */
 .gnav-menu a:hover {
-  color: var(--nav-accent);
-  background: rgb(255 255 255 / 6%);
+  color: var(--nav-ink);
+  background: var(--nav-hover-bg);
 }
 
 .gnav-menu a[aria-current='page'] {
-  color: var(--nav-accent);
-  box-shadow: inset 3px 0 0 var(--nav-accent);
+  font-weight: 600;
+  color: var(--band-accent);
 }
 
+.gnav-menu a[aria-current='page']:hover {
+  color: var(--nav-ink);
+}
+
+/* quarkus.io folds "Using Spring?" and "AI" into submenus; here they head their links */
 .gnav-group {
-  margin: 8px 0 0;
-  padding: 8px 18px 2px;
-  font-size: 11.5px;
+  margin: 0;
+  padding: 12px 10px 4px;
+  font-size: 13px;
   font-weight: 700;
+  line-height: 1.4;
   letter-spacing: 0.06em;
+  text-align: right;
   text-transform: uppercase;
-  color: #9a9a9a;
-  border-top: 1px solid #333333;
+  color: var(--nav-muted);
+  border-bottom: 1px solid var(--nav-panel-line);
 }
 
 .gnav-cta {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 6px 0 8px;
-  padding: 3px 14px;
-  font-size: 14px;
-  line-height: 1.8;
-  letter-spacing: 0.04em;
+  display: inline-block;
+  margin: 12px 8px;
+  padding: 0 16px;
+  font-size: 19.2px;
+  font-weight: 300;
+  line-height: 28.8px;
   text-transform: uppercase;
   white-space: nowrap;
   color: var(--nav-ink);
@@ -598,35 +616,75 @@ a.ver:hover {
 
 .gnav-cta:hover {
   color: var(--nav-ink);
-  background: var(--nav-cta-hover);
-  border-color: var(--nav-cta-hover);
+  background: var(--nav-hover-bg);
+  border-color: var(--nav-hover-bg);
+}
+
+/* the theme, an icon as on quarkus.io: the sun, the moon, or half and half for the system's */
+.gnav-theme {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 56px;
+  padding: 0;
+  color: var(--nav-ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.gnav-theme:hover {
+  color: var(--nav-accent);
+}
+
+.gnav-theme .ico {
+  width: 20px;
+  height: 20px;
 }
 
 .gnav-burger {
   display: none;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   color: var(--nav-ink);
   background: none;
-  border: 1px solid rgb(255 255 255 / 45%);
-  border-radius: var(--radius);
+  border: 0;
   cursor: pointer;
 }
 
 .gnav-burger .ico {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
 }
 
-.gbar .theme-toggle {
-  margin-left: 4px;
+/* 1024 px and wider, as on quarkus.io: the logo above the menu, both centred, up to 1450 px; above, the logo left and
+   the menu right, on one row once both fit */
+@media (min-width: 1024px) {
+  .gbar-in {
+    flex-wrap: wrap;
+    gap: 16px 160px;
+    padding: 16px 64px;
+  }
 }
 
-/* below 960 px the menu folds behind one button and opens as a panel under the bar */
-@media (max-width: 959px) {
+@media (min-width: 1024px) and (max-width: 1450px) {
+  .gbar-in {
+    justify-content: center;
+  }
+}
+
+@media (min-width: 1367px) {
+  .gbar-in {
+    padding-left: 208px;
+    padding-right: 208px;
+  }
+}
+
+@media (max-width: 1023.98px) {
   .gnav-burger {
     display: inline-flex;
   }
@@ -639,10 +697,9 @@ a.ver:hover {
     right: 0;
     flex-direction: column;
     align-items: stretch;
-    gap: 0;
-    padding: 8px max(16px, env(safe-area-inset-right, 0px)) 16px max(16px, env(safe-area-inset-left, 0px));
-    background: #222222;
-    border-bottom: 1px solid #333333;
+    padding-bottom: 8px;
+    text-align: center;
+    background: var(--nav-fold);
   }
 
   .gbar.is-open .gnav {
@@ -650,40 +707,42 @@ a.ver:hover {
   }
 
   .gnav-btn {
-    justify-content: space-between;
+    justify-content: center;
     width: 100%;
   }
 
   .gnav-menu {
     position: static;
     min-width: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
   }
 
-  .gnav-item:last-of-type .gnav-menu {
-    right: auto;
+  .gnav-menu a,
+  .gnav-group {
+    text-align: center;
   }
 
-  .gnav-cta-item {
-    padding: 10px 0 4px;
-  }
-
-  .gnav-cta {
-    justify-content: center;
-    width: 100%;
-    margin: 0;
+  .gnav-theme {
+    padding: 0 15px;
   }
 }
 
-@media (max-width: 700px) {
-  .theme-label {
-    display: none;
+@media (min-width: 760px) and (max-width: 1023.98px) {
+  .gbar-in {
+    padding-left: max(32px, env(safe-area-inset-left, 0px));
+    padding-right: max(32px, env(safe-area-inset-right, 0px));
   }
+}
 
-  .brand-logo img {
-    height: 24px;
+@media (max-width: 768px) {
+  .brand-logo {
+    width: 128px;
+  }
+}
+
+/* forced colours keep the black bar: the logo is white */
+@media (forced-colors: active) {
+  .gbar {
+    forced-color-adjust: none;
   }
 }
 
@@ -873,21 +932,9 @@ a.ver:hover {
   border-color: var(--primary-hover);
 }
 
-.btn-quiet {
-  border-color: transparent;
-  background: transparent;
-}
-
 .btn-icon {
   width: 40px;
   padding: 0;
-}
-
-.theme-toggle {
-  min-height: 36px;
-  padding: 6px 10px;
-  font-size: 13px;
-  color: var(--ink-2);
 }
 
 .more {
@@ -1111,17 +1158,33 @@ a.ver:hover {
   --tone-line: var(--rule-2);
 }
 
-/* quarkus.io's "stable" and "preview" tags: LTS streams and pre-releases */
-.chip.tone-lts {
-  color: #ffffff;
+.chip.tone-pre {
+  border-style: dashed;
+}
+
+/* an extension's status, in quarkus.io's tag colours */
+.chip.tone-stable {
+  color: var(--tag-ink);
   background: var(--tag-stable);
   border-color: var(--tag-stable);
 }
 
-.chip.tone-pre {
-  color: #121212;
+.chip.tone-preview {
+  color: var(--tag-preview-ink);
   background: var(--tag-preview);
   border-color: var(--tag-preview);
+}
+
+.chip.tone-experimental {
+  color: var(--tag-ink);
+  background: var(--tag-experimental);
+  border-color: var(--tag-experimental);
+}
+
+.chip.tone-deprecated {
+  color: var(--tag-ink);
+  background: var(--tag-deprecated);
+  border-color: var(--tag-deprecated);
 }
 
 .phase,
@@ -1194,8 +1257,8 @@ a.ver:hover {
   padding: 4px 7px;
   font: 600 11px/1.2 var(--font-sans);
   white-space: nowrap;
-  color: var(--bg);
-  background: var(--ink);
+  color: var(--surface-bg-raised);
+  background: var(--surface-ink);
   border-radius: 2px;
   pointer-events: none;
 }
@@ -1375,9 +1438,8 @@ a.ver:hover {
 .display {
   max-width: 18ch;
   font-size: clamp(34px, 6.2vw, 60px);
-  font-weight: 780;
-  line-height: 1;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
 .home-search {
@@ -1560,15 +1622,16 @@ a.ver:hover {
   box-shadow: var(--shadow);
 }
 
+/* the header's search sits at the right end of its bar: its results open leftwards from there */
 .search--compact .search-list {
+  left: auto;
   min-width: min(520px, calc(100vw - 32px));
-  right: auto;
 }
 
 @media (max-width: 700px) {
   .search--compact .search-list {
+    left: 0;
     min-width: 0;
-    right: 0;
   }
 }
 
@@ -1652,10 +1715,9 @@ mark {
 }
 
 .page-title {
-  font-size: clamp(28px, 4.6vw, 44px);
-  font-weight: 760;
-  letter-spacing: -0.015em;
-  line-height: 1.08;
+  font-size: clamp(30px, 4.6vw, 48px);
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .page-title--mono {
@@ -2956,6 +3018,7 @@ a.dgroup-id:hover {
   --surface-muted: var(--muted);
   --surface-faint: var(--faint);
   --surface-accent: var(--accent);
+  --surface-accent-ink: var(--accent-ink);
   --surface-link-hover: var(--link-hover);
   --surface-rule: var(--rule);
   --surface-rule-2: var(--rule-2);
@@ -2981,11 +3044,12 @@ a.dgroup-id:hover {
   --bg-sunken: rgb(255 255 255 / 12%);
   --bg-hover: rgb(255 255 255 / 10%);
   --accent-soft: rgb(155 202 250 / 16%);
+  --accent-ink: var(--band);
   position: relative;
   margin-top: -36px;
   margin-bottom: 36px;
-  padding-top: 44px;
-  padding-bottom: 40px;
+  padding-top: clamp(40px, 6vw, 64px);
+  padding-bottom: clamp(32px, 4.5vw, 48px);
   color: var(--band-ink);
   background: var(--band);
   box-shadow: 0 0 0 100vmax var(--band);
@@ -3000,6 +3064,7 @@ a.dgroup-id:hover {
   --muted: var(--surface-muted);
   --faint: var(--surface-faint);
   --accent: var(--surface-accent);
+  --accent-ink: var(--surface-accent-ink);
   --link-hover: var(--surface-link-hover);
   --focus: var(--surface-focus);
   --rule: var(--surface-rule);
@@ -3015,6 +3080,10 @@ a.dgroup-id:hover {
   border-radius: 0 var(--radius) var(--radius) 0;
 }
 
+.band .copy.is-done {
+  color: var(--band-ok);
+}
+
 /* the search box on the navigation bar */
 .mast .search-input {
   color: var(--nav-ink);
@@ -3028,6 +3097,59 @@ a.dgroup-id:hover {
 
 .mast .search-input::placeholder {
   color: rgb(255 255 255 / 62%);
+}
+
+/* Paper drops background colours unless asked: the bars stay off, the title bands print as plain heads in the page's
+   colours, and the tags and buttons keep theirs. */
+@media print {
+  .mast {
+    display: none;
+  }
+
+  .band {
+    --ink: var(--surface-ink);
+    --ink-2: var(--surface-ink-2);
+    --muted: var(--surface-muted);
+    --faint: var(--surface-faint);
+    --accent: var(--surface-accent);
+    --accent-ink: var(--surface-accent-ink);
+    --link-hover: var(--surface-link-hover);
+    --focus: var(--surface-focus);
+    --rule: var(--surface-rule);
+    --rule-2: var(--surface-rule-2);
+    --bg-raised: var(--surface-bg-raised);
+    --bg-sunken: var(--surface-bg-sunken);
+    --bg-hover: var(--surface-bg-hover);
+    --accent-soft: var(--surface-accent-soft);
+    margin-top: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    color: var(--ink);
+    background: none;
+    box-shadow: none;
+    clip-path: none;
+  }
+
+  .foot,
+  .foot-in {
+    color: var(--muted);
+    background: none;
+  }
+
+  .foot {
+    border-top: 1px solid var(--rule);
+  }
+
+  .foot a {
+    color: var(--accent);
+  }
+
+  .chip,
+  .cfg-mark,
+  .btn-primary {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
