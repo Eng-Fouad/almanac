@@ -15,6 +15,7 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// `--pause` against Maven Central: the commands (and the source doc check) refuse a pause shorter than
 /// [Http#CENTRAL_MIN_PAUSE] before they open their cache, offline included; any pause goes for another repository.
+/// Their default is [Pacer.Pause#DEFAULT], which Maven Central accepts.
 class PauseOptionTest {
 
     /// Exit code and log (standard error, with the error of a failed command) of one run.
@@ -57,6 +59,34 @@ class PauseOptionTest {
             assertFalse(other.log().contains("too short"), other.log());
             assertFalse(Files.exists(Path.of(work).resolve("cache").resolve(Pacer.LOCK_FILE)));
         }
+    }
+
+    @Test
+    void everyDefaultPauseIsTheDefaultOfThePacerAndEnoughForMavenCentral() throws Exception {
+        // the source doc check has a default of its own, apart from the one the commands share (CommonOptions)
+        try (ScratchDir dir = ScratchDir.create()) {
+            // without --pause it gets past the Maven Central check, to the release list it cannot read offline
+            Run check = run(new SourceDocCheck(), "3.8.6", "--offline", "--work", dir.resolve("work").toString());
+            assertEquals(1, check.exitCode(), check.log());
+            assertFalse(check.log().contains("too short"), check.log());
+            assertTrue(check.log().contains("error: offline mode: not fetching "), check.log());
+        }
+
+        // every --pause, of the commands and of the check, defaults to the pacer's default
+        List<CommandLine> commands = new ArrayList<>(List.of(new CommandLine(new Main()),
+                new CommandLine(new SourceDocCheck())));
+        List<String> withPause = new ArrayList<>();
+        for (int i = 0; i < commands.size(); i++) {
+            CommandLine command = commands.get(i);
+            commands.addAll(command.getSubcommands().values());
+            CommandLine.Model.OptionSpec pause = command.getCommandSpec().findOption("--pause");
+            if (pause != null) {
+                String name = command.getCommandSpec().qualifiedName();
+                assertEquals(Pacer.Pause.DEFAULT, Pacer.Pause.parse(pause.defaultValue()), name);
+                withPause.add(name);
+            }
+        }
+        assertTrue(withPause.containsAll(List.of("SourceDocCheck", "quarkus-almanac bom")), withPause.toString());
     }
 
     private static Run run(String... args) {
