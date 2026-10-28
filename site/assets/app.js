@@ -821,6 +821,9 @@ function collapsible(sec) {
   return sec;
 }
 
+/** The sections left open in each comparison during this visit, by pair of release indices ("ia:ib"). */
+const openSections = new Map();
+
 function isSectionOpen(sec) {
   return sec.querySelector(':scope > .sec-head .sec-toggle')?.getAttribute('aria-expanded') === 'true';
 }
@@ -1370,9 +1373,11 @@ async function renderCompare(r) {
   const cmp = comparison(ia, ib, data);
   const head = compareHeader(cmp);
   if (ia === ib) return frag(head, emptyNote('From and To are the same release, so there is nothing to compare. Change one of them above.'));
-  // the sections start collapsed; the summary above says what each holds
+  // the sections start collapsed (the summary above says what each holds), except those the reader left open in
+  // this pair earlier in the visit, so that Back from a property or an artifact finds them as they were
   const sections = [libsSection(cmp, data), configSection(cmp, data), depsSection(cmp, data), extSection(cmp, data)].map(collapsible);
-  const all = h('button', { type: 'button', class: 'jump-link jump-all', 'aria-controls': sections.map((s) => `${s.id}-body`).join(' ') });
+  const pair = `${ia}:${ib}`;
+  const all = h('button', { type: 'button', class: 'btn jump-all', 'aria-controls': sections.map((s) => `${s.id}-body`).join(' ') });
   const sync = () => {
     all.textContent = sections.every(isSectionOpen) ? 'Collapse all' : 'Expand all';
   };
@@ -1380,7 +1385,13 @@ async function renderCompare(r) {
     const open = !sections.every(isSectionOpen);
     for (const s of sections) setSectionOpen(s, open);
   });
-  for (const s of sections) s.addEventListener('sectiontoggle', sync);
+  for (const s of sections) {
+    if (openSections.get(pair)?.has(s.id)) setSectionOpen(s, true);
+    s.addEventListener('sectiontoggle', () => {
+      openSections.set(pair, new Set(sections.filter(isSectionOpen).map((x) => x.id)));
+      sync();
+    });
+  }
   sync();
   return frag(
     head,
@@ -1479,7 +1490,10 @@ function summaryLedger(cmp, data) {
       : null,
     note ? h('p', { class: 'ledger-note' }, note) : null);
   const cells = [];
-  if (cmp.config) {
+  // one snapshot for both releases: say so here, since its section starts collapsed and zeros would mislead
+  if (cmp.config && cmp.ca === cmp.cb) {
+    cells.push(cell('Configuration', 'sec-config', [], sameSnapshotText(cmp, 'config')));
+  } else if (cmp.config) {
     const c = cmp.config.counts;
     const kinds = ['default', 'type', 'phase', 'deprecated', 'undeprecated', 'enum', 'extension'].filter((k) => c[k]).map((k) => `${fmt(c[k])} ${KIND_LABEL[k]}`);
     cells.push(cell('Configuration', 'sec-config', [[c.added, 'added', 'add'], [c.removed, 'removed', 'rem'], [c.changed, 'changed', 'chg']],
@@ -1495,7 +1509,9 @@ function summaryLedger(cmp, data) {
   } else {
     cells.push(cell('Dependencies', 'sec-deps', [], 'bom.json is unavailable.'));
   }
-  if (cmp.ext) {
+  if (cmp.ext && cmp.ea === cmp.eb) {
+    cells.push(cell('Extensions', 'sec-ext', [], sameSnapshotText(cmp, 'extension')));
+  } else if (cmp.ext) {
     const e = cmp.ext.counts;
     const kinds = ['relocated', 'status', 'renamed'].filter((k) => e[k]).map((k) => `${fmt(e[k])} ${KIND_LABEL[k]}`);
     cells.push(cell('Extensions', 'sec-ext', [[e.added, 'added', 'add'], [e.removed, 'removed', 'rem'], [cmp.ext.changed.length, 'changed', 'chg']],

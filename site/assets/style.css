@@ -1638,6 +1638,14 @@ mark {
   text-decoration-color: currentColor;
 }
 
+/* an action, not a section: a small button at the end of the row */
+.jump-all {
+  min-height: 32px;
+  margin-left: auto;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
 /* sections */
 
 .sec {
@@ -1730,7 +1738,16 @@ mark {
     content-visibility: visible !important;
   }
 
-  .sec-chev {
+  .sec.is-collapsed {
+    margin-top: 52px;
+  }
+
+  .sec.is-collapsed .sec-head {
+    margin-bottom: 14px;
+  }
+
+  .sec-chev,
+  .jump-all {
     display: none;
   }
 }
