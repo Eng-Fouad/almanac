@@ -167,7 +167,8 @@ body {
   min-height: 100vh;
 }
 
-[hidden] {
+/* hidden="until-found" stays to the browser, which keeps such content findable (collapsed sections) */
+[hidden]:not([hidden='until-found']) {
   display: none !important;
 }
 
@@ -1681,6 +1682,57 @@ mark {
 .sec-tools {
   grid-column: 2;
   margin-top: 10px;
+}
+
+/* sections that open and close: the title is the button */
+
+.sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.sec-toggle:hover {
+  color: var(--accent);
+}
+
+.sec-chev {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  transition: transform 0.15s ease;
+}
+
+.sec.is-collapsed .sec-chev {
+  transform: rotate(-90deg);
+}
+
+.sec.is-collapsed {
+  margin-top: 30px;
+}
+
+.sec.is-collapsed .sec-head {
+  margin-bottom: 0;
+}
+
+@media print {
+  .sec-body[hidden] {
+    display: block !important;
+    content-visibility: visible !important;
+  }
+
+  .sec-chev {
+    display: none;
+  }
 }
 
 .page-tools {

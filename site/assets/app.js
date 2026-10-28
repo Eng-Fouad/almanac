@@ -55,6 +55,7 @@ const ICONS = {
   swap: 'M2.5 5.5h10.5L10.5 3M13.5 10.5H3L5.5 13',
   search: 'M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.5 10.5L14 14',
   arrow: 'M2.5 8h10.5M9.5 4.5L13 8l-3.5 3.5',
+  chevron: 'M4.5 6l3.5 3.5L11.5 6',
   external: 'M9.5 2.5h4v4M13.5 2.5L7.5 8.5M11.5 9v4.5h-9v-9H7',
   theme: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 2v12',
   ledger: 'M2.5 2.5h11v11h-11zM2.5 6h11M2.5 9.5h11M6 6v7.5',
@@ -799,6 +800,42 @@ function sectionHead(no, title, id, ...extra) {
   return h('div', { class: 'sec-head' }, h('span', { class: 'sec-no', 'aria-hidden': 'true' }, `§${no}`), h('h2', { id }, title), extra);
 }
 
+/**
+ * Makes a filled section collapsible, and collapses it: the title of its head becomes a button that shows or hides
+ * everything after the head. Find in page still opens a collapsed section where browsers support
+ * `hidden="until-found"`. The section fires `sectiontoggle` when it opens or closes.
+ */
+function collapsible(sec) {
+  const head = sec.querySelector(':scope > .sec-head');
+  const heading = head?.querySelector('h2');
+  if (!heading) return sec;
+  const body = h('div', { class: 'sec-body', id: `${sec.id}-body` });
+  while (head.nextSibling) body.append(head.nextSibling);
+  const toggle = h('button', { type: 'button', class: 'sec-toggle', 'aria-controls': body.id },
+    [...heading.childNodes], icon('chevron', 'sec-chev'));
+  heading.replaceChildren(toggle);
+  sec.append(body);
+  toggle.addEventListener('click', () => setSectionOpen(sec, !isSectionOpen(sec)));
+  body.addEventListener('beforematch', () => setSectionOpen(sec, true));
+  setSectionOpen(sec, false);
+  return sec;
+}
+
+function isSectionOpen(sec) {
+  return sec.querySelector(':scope > .sec-head .sec-toggle')?.getAttribute('aria-expanded') === 'true';
+}
+
+function setSectionOpen(sec, open) {
+  const toggle = sec.querySelector(':scope > .sec-head .sec-toggle');
+  const body = sec.querySelector(':scope > .sec-body');
+  if (!toggle || !body) return;
+  toggle.setAttribute('aria-expanded', String(open));
+  if (open) body.removeAttribute('hidden');
+  else body.setAttribute('hidden', 'until-found');
+  sec.classList.toggle('is-collapsed', !open);
+  sec.dispatchEvent(new CustomEvent('sectiontoggle'));
+}
+
 function moreButton(text, onClick) {
   const b = h('button', { type: 'button', class: 'more' }, text);
   b.addEventListener('click', onClick);
@@ -844,7 +881,13 @@ function countMark(tone, sign, n, label) {
 function jumpTo(id) {
   const el = document.getElementById(id);
   if (!el) return;
+  const toggle = el.querySelector(':scope > .sec-head .sec-toggle');
+  if (toggle && !isSectionOpen(el)) setSectionOpen(el, true);
   el.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  if (toggle) {
+    toggle.focus({ preventScroll: true });
+    return;
+  }
   const heading = el.querySelector('h2');
   if (heading) {
     heading.setAttribute('tabindex', '-1');
@@ -1327,17 +1370,27 @@ async function renderCompare(r) {
   const cmp = comparison(ia, ib, data);
   const head = compareHeader(cmp);
   if (ia === ib) return frag(head, emptyNote('From and To are the same release, so there is nothing to compare. Change one of them above.'));
+  // the sections start collapsed; the summary above says what each holds
+  const sections = [libsSection(cmp, data), configSection(cmp, data), depsSection(cmp, data), extSection(cmp, data)].map(collapsible);
+  const all = h('button', { type: 'button', class: 'jump-link jump-all', 'aria-controls': sections.map((s) => `${s.id}-body`).join(' ') });
+  const sync = () => {
+    all.textContent = sections.every(isSectionOpen) ? 'Collapse all' : 'Expand all';
+  };
+  all.addEventListener('click', () => {
+    const open = !sections.every(isSectionOpen);
+    for (const s of sections) setSectionOpen(s, open);
+  });
+  for (const s of sections) s.addEventListener('sectiontoggle', sync);
+  sync();
   return frag(
     head,
     summaryLedger(cmp, data),
     h('nav', { class: 'jump', 'aria-label': 'Sections of this comparison' },
       h('span', { class: 'jump-k' }, 'On this page'),
       [['sec-libs', 'Key libraries'], ['sec-config', 'Configuration'], ['sec-deps', 'Dependencies'], ['sec-ext', 'Extensions']].map(([id, label]) =>
-        h('button', { type: 'button', class: 'jump-link', onclick: () => jumpTo(id) }, label))),
-    libsSection(cmp, data),
-    configSection(cmp, data),
-    depsSection(cmp, data),
-    extSection(cmp, data));
+        h('button', { type: 'button', class: 'jump-link', onclick: () => jumpTo(id) }, label)),
+      all),
+    sections);
 }
 
 function compareHeader(cmp) {
