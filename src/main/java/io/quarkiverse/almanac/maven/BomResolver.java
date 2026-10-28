@@ -75,9 +75,11 @@ import java.util.regex.Pattern;
 ///   `version.empty` = `${version.empty}`).
 /// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}` or `x-${X}`), named after
 ///   a model element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
-///   without `<name>`); and where Maven's validation rejects what the resolution does not read: a parent whose
-///   packaging is not `pom`, a pom without groupId, a system scope entry without systemPath, dependencies (not managed
-///   ones) without a valid id or version, modules in a pom whose packaging is not `pom`.
+///   without `<name>`); and where Maven's validation of the model rejects what the resolution does not check, such
+///   as a pom without modelVersion, a pom without groupId or version, with an invalid groupId or an empty packaging,
+///   a parent whose packaging is not `pom`, a system scope entry without systemPath or a systemPath without system
+///   scope, dependencies (not managed ones) without a valid id or version, and modules in a pom whose packaging is
+///   not `pom`.
 /// - It writes another value: a property named `packaging` gives its value, where Maven takes the model's packaging;
 ///   a reference that no pom defines stays as written, where Maven also reads an environment variable of that name
 ///   (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and [#MACHINE_NAMES], as
