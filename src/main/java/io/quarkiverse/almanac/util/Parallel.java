@@ -29,9 +29,10 @@ public final class Parallel {
     }
 
     /// Applies `function` to every item with at most `parallelism` tasks running at once and returns
-    /// the results in input order. Every task runs to completion; the first failure is then rethrown with the
-    /// others attached as suppressed exceptions, each once: tasks can fail with one shared exception, such as the
-    /// failed fetch of a pom that several of them waited for.
+    /// the results in input order. Every task runs to completion; the first failure is then rethrown as it is (an
+    /// [UncheckedIOException] as the [IOException] it carries) with the others attached to it as suppressed
+    /// exceptions, each once: tasks can fail with one shared exception, such as the failed fetch of a pom that several
+    /// of them waited for, and an exception is one failure with the [UncheckedIOException] that carries it.
     public static <T, R> List<R> map(Collection<T> items, int parallelism, IoFunction<? super T, ? extends R> function)
             throws IOException {
         Semaphore permits = new Semaphore(Math.max(1, parallelism));
@@ -49,44 +50,55 @@ public final class Parallel {
             }
         }
         List<R> results = new ArrayList<>(futures.size());
-        Throwable failure = null;
+        Throwable thrown = null;
+        // what the failures so far stand for (unwrapped), so that none is attached twice or to itself
         Set<Throwable> failures = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Future<R> future : futures) {
             try {
                 results.add(future.get());
             } catch (ExecutionException e) {
-                if (!failures.add(e.getCause())) {
+                if (!failures.add(unwrap(e.getCause()))) {
                     continue;
                 }
-                if (failure == null) {
-                    failure = e.getCause();
+                if (thrown == null) {
+                    thrown = toThrow(e.getCause());
                 } else {
-                    failure.addSuppressed(e.getCause());
+                    thrown.addSuppressed(e.getCause());
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new InterruptedIOException("interrupted while waiting for parallel tasks");
             }
         }
-        if (failure != null) {
-            throw rethrow(failure);
+        if (thrown != null) {
+            throw rethrow(thrown);
         }
         return results;
     }
 
-    private static IOException rethrow(Throwable failure) {
-        if (failure instanceof IOException io) {
-            return io;
-        }
-        if (failure instanceof UncheckedIOException unchecked) {
-            return unchecked.getCause();
-        }
-        if (failure instanceof RuntimeException runtime) {
+    /// The exception a failure stands for: the [IOException] that an [UncheckedIOException] carries, else the
+    /// failure itself.
+    private static Throwable unwrap(Throwable failure) {
+        return failure instanceof UncheckedIOException unchecked ? unchecked.getCause() : failure;
+    }
+
+    /// The exception that [#map] throws for its first failure, worked out before the other failures are attached to
+    /// it: the exception the failure stands for, or a new [IOException] that carries any other checked exception.
+    private static Throwable toThrow(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        return cause instanceof IOException || cause instanceof RuntimeException || cause instanceof Error
+                ? cause
+                : new IOException(cause);
+    }
+
+    /// Throws an unchecked `thrown` ([#toThrow]); returns an [IOException], for `throw rethrow(thrown)`.
+    private static IOException rethrow(Throwable thrown) {
+        if (thrown instanceof RuntimeException runtime) {
             throw runtime;
         }
-        if (failure instanceof Error error) {
+        if (thrown instanceof Error error) {
             throw error;
         }
-        return new IOException(failure);
+        return (IOException) thrown;
     }
 }
