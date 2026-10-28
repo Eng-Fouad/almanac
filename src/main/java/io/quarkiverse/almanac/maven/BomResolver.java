@@ -354,7 +354,7 @@ public final class BomResolver {
                     blankToNull(interpolator.apply(raw.classifier())), interpolator.apply(raw.scope()),
                     raw.origin(), null, null);
             if (!entry.isImport()) {
-                requireValidIds(entry);
+                requireValidIds(entry, coordinates, pom.parent() != null, machineProfiles);
                 entry = entry.doubting(doubt(entry, coordinates, pom.parent() != null, machineProfiles));
             }
             managed.add(entry);
@@ -490,9 +490,16 @@ public final class BomResolver {
     }
 
     /// Fails, as Maven's validation of the effective model does, on a managed dependency whose groupId or artifactId
-    /// is missing or holds other characters than Maven's id characters, such as a reference that no pom defines. Import
-    /// entries are not managed dependencies: they are replaced by the BOMs they import.
-    private static void requireValidIds(Managed entry) throws IOException {
+    /// is missing or holds other characters than Maven's id characters, such as a reference that no pom defines. A
+    /// reference that Maven may resolve where the resolution does not look ([Elsewhere]) fails too, saying where.
+    /// Import entries are not managed dependencies: they are replaced by the BOMs they import.
+    ///
+    /// @param coordinates     the model that interpolated the entry
+    /// @param parent          whether that model has a parent
+    /// @param machineProfiles the properties that the profiles of its lineage depending on the machine set, each with
+    ///                        the first such profile
+    private static void requireValidIds(Managed entry, String coordinates, boolean parent,
+            Map<String, String> machineProfiles) throws IOException {
         String[][] ids = {{"groupId", entry.groupId()}, {"artifactId", entry.artifactId()}};
         for (String[] id : ids) {
             if (id[1] == null || id[1].isEmpty()) {
@@ -500,6 +507,11 @@ public final class BomResolver {
                         + "accept", entry.origin(), orUnknown(entry.groupId()), orUnknown(entry.artifactId()), id[0]));
             }
             if (!ID.matcher(id[1]).matches()) {
+                String where = mayResolve(id[1], coordinates, parent, machineProfiles);
+                if (where != null) {
+                    throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s, whose %s %s", entry.origin(),
+                            entry.groupId(), entry.artifactId(), id[0], where));
+                }
                 throw new IOException(String.format(Locale.ROOT, "%s manages %s:%s, whose %s %s is no valid Maven id%s",
                         entry.origin(), entry.groupId(), entry.artifactId(), id[0], id[1],
                         id[1].contains("${") ? " (it keeps a reference that no pom defines)" : ""));
@@ -526,21 +538,33 @@ public final class BomResolver {
     private static String doubt(Managed entry, String coordinates, boolean parent,
             Map<String, String> machineProfiles) {
         for (String value : new String[] {entry.version(), entry.type(), entry.classifier()}) {
-            Matcher matcher = EXPRESSION.matcher(Objects.toString(value, ""));
-            while (matcher.find()) {
-                String expression = matcher.group(1);
-                String name = expression.startsWith(".") ? expression.substring(1) : expression;
-                Elsewhere where = elsewhere(name, parent, machineProfiles.keySet());
-                if (where != null) {
-                    return "keeps ${" + expression + "}, " + switch (where) {
-                        case MODEL -> "which Maven reads from the model of " + coordinates + ", beyond the "
-                                + "coordinates, packaging, parent and properties that the resolution reads";
-                        case MACHINE -> "which Maven takes from the machine that builds: a property of the JVM, of "
-                                + "the environment or of Maven itself";
-                        case PROFILE -> "which the " + machineProfiles.get(name) + " sets on the machines that "
-                                + "activate it, a profile that the resolution does not apply";
-                    };
-                }
+            String where = mayResolve(value, coordinates, parent, machineProfiles);
+            if (where != null) {
+                return where;
+            }
+        }
+        return null;
+    }
+
+    /// Why Maven may give a reference that an interpolated value keeps a value that the resolution does not know
+    /// ([Elsewhere]), for the first such reference: `keeps ${x}, which ...`; null when Maven keeps every reference of
+    /// the value as written.
+    private static String mayResolve(String value, String coordinates, boolean parent,
+            Map<String, String> machineProfiles) {
+        Matcher matcher = EXPRESSION.matcher(Objects.toString(value, ""));
+        while (matcher.find()) {
+            String expression = matcher.group(1);
+            String name = expression.startsWith(".") ? expression.substring(1) : expression;
+            Elsewhere where = elsewhere(name, parent, machineProfiles.keySet());
+            if (where != null) {
+                return "keeps ${" + expression + "}, " + switch (where) {
+                    case MODEL -> "which Maven may read from the model of " + coordinates + ", beyond the "
+                            + "coordinates, packaging, parent and properties that the resolution reads";
+                    case MACHINE -> "which Maven may take from the machine that builds: a property of the JVM, of the "
+                            + "environment or of Maven itself";
+                    case PROFILE -> "which the " + machineProfiles.get(name) + " sets on the machines that activate "
+                            + "it, a profile that the resolution does not apply";
+                };
             }
         }
         return null;

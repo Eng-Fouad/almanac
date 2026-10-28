@@ -543,10 +543,10 @@ class BomResolverTest {
         // Maven reads more of the model than the coordinates, the packaging and the parent, and takes properties from
         // the machine that builds
         Repo repo = new Repo().add("g:parent:1", project("g:parent:1"));
-        String model = ", which Maven reads from the model of g:bom:1, beyond the coordinates, packaging, parent and "
-                + "properties that the resolution reads";
-        String machine = ", which Maven takes from the machine that builds: a property of the JVM, of the environment "
-                + "or of Maven itself";
+        String model = ", which Maven may read from the model of g:bom:1, beyond the coordinates, packaging, parent "
+                + "and properties that the resolution reads";
+        String machine = ", which Maven may take from the machine that builds: a property of the JVM, of the "
+                + "environment or of Maven itself";
         Map<String, String> failures = new LinkedHashMap<>();
         failures.put(project("g:bom:1", "<name>The BOM</name>", managed(dep("g:a:${project.name}"))),
                 "the managed dependency g:a (declared in g:bom:1) keeps ${project.name}" + model);
@@ -617,6 +617,32 @@ class BomResolverTest {
         failures.put(project(":bom:", parent("g:parent:1")),
                 "g:parent:1 manages g:${unknown.artifact}, whose artifactId ${unknown.artifact} is no valid Maven id "
                         + "(it keeps a reference that no pom defines)");
+        failures.forEach((bom, message) ->
+                assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+    }
+
+    @Test
+    void aGroupIdOrArtifactIdThatKeepsAReferenceMavenMayResolveSaysWhere() {
+        // where Maven may give the reference a value, the id may be valid there: the error names where it may come
+        // from, as for a version
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1",
+                managed(dep("${project.description}:a:1"))));
+        Map<String, String> failures = new LinkedHashMap<>();
+        failures.put(project("t:bom:1", "<name>N</name>", managed(dep("g:${project.name}:1"))),
+                "t:bom:1 manages g:${project.name}, whose artifactId keeps ${project.name}, which Maven may read from "
+                        + "the model of t:bom:1, beyond the coordinates, packaging, parent and properties that the "
+                        + "resolution reads");
+        failures.put(project(":bom:", parent("g:parent:1")),
+                "g:parent:1 manages ${project.description}:a, whose groupId keeps ${project.description}, which Maven "
+                        + "may read from the model of g:bom:1, beyond the coordinates, packaging, parent and "
+                        + "properties that the resolution reads");
+        failures.put(project("t:bom:1", managed(dep("${env.GROUP}:a:1"))),
+                "t:bom:1 manages ${env.GROUP}:a, whose groupId keeps ${env.GROUP}, which Maven may take from the "
+                        + "machine that builds: a property of the JVM, of the environment or of Maven itself");
+        failures.put(project("t:bom:1", managed(dep("g:${art}:1")),
+                        "<profiles>" + profile("j", "<jdk>[1.8,)</jdk>", properties("art=a")) + "</profiles>"),
+                "t:bom:1 manages g:${art}, whose artifactId keeps ${art}, which the profile j of t:bom:1 (JDK [1.8,)) "
+                        + "sets on the machines that activate it, a profile that the resolution does not apply");
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
     }
