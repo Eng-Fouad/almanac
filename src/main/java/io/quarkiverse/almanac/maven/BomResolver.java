@@ -31,18 +31,19 @@ import java.util.regex.Pattern;
 ///    property condition holds when it asks for a property to be absent (`!name`, or a `!value`), and
 ///    `activeByDefault` profiles count when no other profile of the pom is active. Their properties and managed
 ///    dependencies override the pom's own. A profile whose activation depends on the machine (JDK, OS, file, or a
-///    property that the JVM, the environment or the `mvn` launcher provides: [#MACHINE_PROPERTIES], [#MACHINE_NAMES])
-///    is not applied. The resolution fails where such a profile could change the result: when it manages dependencies
-///    or sets a property the resolution reads, and when it is in a pom whose `activeByDefault` profiles apply and one
-///    of these does, as Maven drops them on the machines that activate it.
+///    property that the JVM, the environment, the `mvn` launcher or Maven itself provides: [#MACHINE_PROPERTIES],
+///    [#MACHINE_NAMES]) is not applied. The resolution fails where such a profile could change the result: when it
+///    manages dependencies or sets a property the resolution reads, and when it is in a pom whose `activeByDefault`
+///    profiles apply and one of these does, as Maven drops them on the machines that activate it.
 /// 2. **Inheritance.** The pom and its parents, read from the repository. A pom's groupId and version default to its
 ///    parent's; properties merge, the child's value winning; managed dependencies merge by management key
 ///    (`groupId:artifactId:type:classifier`): a pom's own entries, then its parents' entries of other keys.
 /// 3. **Interpolation** of the merged model, so inherited entries see the child's values: `${project.groupId}`,
 ///    `${project.artifactId}`, `${project.version}`, `${project.packaging}` and `${project.parent.groupId}`,
 ///    `${project.parent.artifactId}`, `${project.parent.version}` (also with the legacy `pom.` prefix, or unprefixed
-///    after the properties), then the properties, resolved recursively; like Maven, a value that holds the reference
-///    itself is passed over for the next one. An unknown reference stays as written.
+///    after the properties, except `${packaging}`: [#BUILD_PACKAGING]), then the properties, resolved recursively;
+///    like Maven, a value that holds the reference itself is passed over for the next one. An unknown reference stays
+///    as written.
 /// 4. **Imports.** The `<type>pom</type><scope>import</scope>` entries, in declaration order (a pom's own before its
 ///    parents'), are replaced by the effective dependency management of the imported BOM, built the same way in the
 ///    imported BOM's own context, for the keys not managed yet: a pom's own and inherited entries beat imported ones,
@@ -69,11 +70,12 @@ import java.util.regex.Pattern;
 ///   keeps as written after all (`${build.version}`, `${name}` without `<name>`, `${os.detected.classifier}`); for a
 ///   profile that depends on the machine and could change the result or form a cycle, whichever machines activate it
 ///   (none for JDK `[99,)`, every one for JDK `[1.8,)`) and also where a child replaces what it sets, and for a cycle
-///   that several such profiles form which no machine activates together; for a property that refers to itself with
-///   more text, also where Maven's order gives the value the resolution would; and, taken for a cycle, for a property
-///   named after a model value that reads it (`version` = `${project.version}`, read as `${version}`) and for an
-///   unused property that refers to itself where only a getter gives Maven a value (`class` = `${class}`,
-///   `version.empty` = `${version.empty}`).
+///   that several such profiles form which no machine activates together; for `${packaging}` and a profile activated
+///   by `packaging`, which Maven gives the packaging of the project it builds ([#BUILD_PACKAGING]), also where that is
+///   the BOM; for a property that refers to itself with more text, also where Maven's order gives the value the
+///   resolution would; and, taken for a cycle, for a property named after a model value that reads it (`version` =
+///   `${project.version}`, read as `${version}`) and for an unused property that refers to itself where only a getter
+///   gives Maven a value (`class` = `${class}`, `version.empty` = `${version.empty}`).
 /// - It writes where Maven fails: for an unused property that refers to itself (`X` = `${X}` or `x-${X}`), named after
 ///   a model element or a property of the machine that Maven finds no value for (`url`, `user.foo`, `build.foo`, `name`
 ///   without `<name>`); and where Maven's validation of the model rejects what the resolution does not check, such
@@ -81,10 +83,10 @@ import java.util.regex.Pattern;
 ///   a parent whose packaging is not `pom`, a system scope entry without systemPath or a systemPath without system
 ///   scope, dependencies (not managed ones) without a valid id or version, and modules in a pom whose packaging is
 ///   not `pom`.
-/// - It writes another value: a property named `packaging` gives its value, where Maven takes the model's packaging;
-///   a reference that no pom defines stays as written, where Maven also reads an environment variable of that name
-///   (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and [#MACHINE_NAMES], as
-///   another vendor's JVM or another launcher than `mvn` may, counts as absent, in a reference and in an activation.
+/// - It writes another value: a reference that no pom defines stays as written, where Maven also reads an environment
+///   variable of that name (`${HOME}`); and a property that a machine provides beyond [#MACHINE_PROPERTIES] and
+///   [#MACHINE_NAMES], as another vendor's JVM or another launcher than `mvn` may, counts as absent, in a reference and
+///   in an activation.
 ///
 /// An instance can be shared between threads: each pom is fetched once (a concurrent request for the same pom waits
 /// for the first) and the effective dependency management of imported BOMs is kept.
@@ -257,13 +259,18 @@ public final class BomResolver {
     /// Properties the JVM, the operating system environment or Maven itself provide, which a plain build has.
     private static final List<String> MACHINE_PROPERTIES = List.of("env.", "java.", "jdk.", "os.", "user.", "file.",
             "line.", "path.", "sun.", "maven.");
+    /// The property that Maven 3.9 sets to the packaging of the project it builds, for profile activation and, before
+    /// the model's own properties and packaging, for interpolation: in a build that imports the BOM, that project's
+    /// packaging, also in the BOM, its parents and its imports.
+    private static final String BUILD_PACKAGING = "packaging";
     /// Properties outside [#MACHINE_PROPERTIES] that the JDK sets on some machines (its encodings since JDK 17, the
-    /// proxy settings it takes from macOS, the toolkit of JDKs before 13) and that the `mvn` launcher sets.
+    /// proxy settings it takes from macOS, the toolkit of JDKs before 13), that the `mvn` launcher sets, and the one
+    /// that Maven 3.9 sets for the build.
     private static final Set<String> MACHINE_NAMES = Set.of("native.encoding", "stdout.encoding", "stderr.encoding",
             "stdin.encoding", "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "ftp.proxyHost",
             "ftp.proxyPort", "socksProxyHost", "socksProxyPort", "http.nonProxyHosts", "ftp.nonProxyHosts",
             "socksNonProxyHosts", "gopherProxySet", "gopherProxyHost", "gopherProxyPort", "awt.toolkit",
-            "classworlds.conf", "library.jansi.path");
+            "classworlds.conf", "library.jansi.path", BUILD_PACKAGING);
     /// The most profiles depending on the machine that could add a property cycle whose every combination is tried.
     private static final int MOST_VARYING_PROFILES = 10;
 
@@ -892,13 +899,15 @@ public final class BomResolver {
     }
 
     /// Maven's model interpolation for one effective model: for `${x}`, the model value when `x` is `project.y` or
-    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Like
-    /// Maven, it passes over a value that holds the reference itself for the next one. Where the values go into the
-    /// result, a property that holds more than the bare reference to itself fails instead: Maven interpolates every
-    /// property in place before it reads the managed dependencies and the coordinates, in an order that depends on the
-    /// property names, so such a property gives either its own value, interpolated, or the next one. An unknown
-    /// reference stays as written; a reference cycle fails, and so does a reference whose only values hold it, unless
-    /// Maven finds another value in the model or on the machine by the reference's name ([BomResolver#byName]).
+    /// `pom.y`, else the property `x`, else the unprefixed model value; the value found is interpolated in turn. Maven
+    /// reads `${packaging}` among the properties it sets for the build ([BomResolver#BUILD_PACKAGING]), which the
+    /// resolution does not know: it stays as written. Like Maven, it passes over a value that holds the reference
+    /// itself for the next one. Where the values go into the result, a property that holds more than the bare
+    /// reference to itself fails instead: Maven interpolates every property in place before it reads the managed
+    /// dependencies and the coordinates, in an order that depends on the property names, so such a property gives
+    /// either its own value, interpolated, or the next one. An unknown reference stays as written; a reference cycle
+    /// fails, and so does a reference whose only values hold it, unless Maven finds another value in the model or on
+    /// the machine by the reference's name ([BomResolver#byName]).
     private static final class Interpolator {
 
         private static final List<String> PREFIXES = List.of("project.", "pom.");
@@ -958,6 +967,10 @@ public final class BomResolver {
             String key = unprefixed(name);
             if (resolving.contains(key)) {
                 throw cycle(resolving, key);
+            }
+            // Maven finds it among the properties that it sets for the build, which the resolution does not know
+            if (name.equals(BUILD_PACKAGING)) {
+                return null;
             }
             // the values the resolution knows, in Maven's order: the model value of a prefixed name, the property, the
             // model value of an unprefixed name

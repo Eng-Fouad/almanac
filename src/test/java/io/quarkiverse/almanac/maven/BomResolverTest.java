@@ -577,10 +577,11 @@ class BomResolverTest {
     }
 
     @Test
-    void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() {
+    void failsOnAReferenceThatMavenMayResolveWhereTheResolutionDoesNotLook() throws IOException {
         // Maven reads more of the model than the coordinates, the packaging and the parent, and takes properties from
         // the machine that builds
-        Repo repo = new Repo().add("g:parent:1", project("g:parent:1"));
+        Repo repo = new Repo().add("g:parent:1", project("g:parent:1"))
+                .add("t:imp:1", project("t:imp:1", managed(dep("g:b:${.packaging}"))));
         String model = ", which Maven may read from the model of g:bom:1, beyond the coordinates, packaging, parent "
                 + "and properties that the resolution reads";
         String machine = ", which Maven may take from the machine that builds: a property of the JVM, of the "
@@ -625,8 +626,19 @@ class BomResolverTest {
                     "the managed dependency t:imp:pom (declared in g:bom:1) keeps " + scope
                             + (scope.startsWith("${env.") ? machine : model));
         }
+        // Maven 3.9 reads ${packaging} among the properties it sets for the build, before a property of that name: the
+        // packaging of the project it builds, which imports the BOM
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", properties("packaging=pp"),
+                        managed(dep("g:a:${packaging}"))),
+                "the managed dependency g:a (declared in g:bom:1) keeps ${packaging}" + machine);
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", managed(bomImport("t:imp:1"))),
+                "the managed dependency g:b (declared in t:imp:1, imported through t:imp:1) keeps ${.packaging}"
+                        + machine);
         failures.forEach((bom, message) ->
                 assertEquals(message, assertThrows(IOException.class, () -> resolve(repo, bom), bom).getMessage()));
+        // while ${project.packaging} is the model's own
+        assertEquals(Map.of("g:a", "pom"), versions(resolve(repo, project("g:bom:1", "<packaging>pom</packaging>",
+                managed(dep("g:a:${project.packaging}"))))));
     }
 
     @Test
@@ -861,6 +873,17 @@ class BomResolverTest {
                         + "</profiles>"),
                 "the profile no-jansi of g:bom:1 (property !library.jansi.path) sets the property x, which the "
                         + "resolution of g:bom:1 reads" + applies);
+        // and by packaging, which Maven 3.9 sets to the packaging of the project it builds, the one importing the BOM
+        failures.put(project("g:bom:1", "<packaging>pom</packaging>", managed(dep("g:a:1")), "<profiles>"
+                        + profile("by-pom", "<property><name>packaging</name><value>pom</value></property>",
+                                managed(dep("g:by-pom:1")))
+                        + "</profiles>"),
+                "the profile by-pom of g:bom:1 (property packaging=pom) manages 1 dependency" + applies);
+        failures.put(project("g:bom:1", properties("x=1"), managed(dep("g:a:${x}")), "<profiles>"
+                        + profile("no-packaging", "<property><name>!packaging</name></property>", properties("x=2"))
+                        + "</profiles>"),
+                "the profile no-packaging of g:bom:1 (property !packaging) sets the property x, which the resolution "
+                        + "of g:bom:1 reads" + applies);
         // active by default, but not in a pom where a profile is active on every machine
         failures.put(project("g:bom:1", managed(dep("g:a:${x}")), "<profiles>"
                         + profile("on", "<property><name>!off</name></property>", properties("y=1"))
