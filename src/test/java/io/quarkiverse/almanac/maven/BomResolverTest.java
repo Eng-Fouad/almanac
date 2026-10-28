@@ -373,6 +373,9 @@ class BomResolverTest {
         Map<String, String> failures = new LinkedHashMap<>();
         failures.put(project("t:bom:1", properties("version=x-${version}"), managed(dep("g:a:${version}"))),
                 "t:bom:1: ${version} reads the property version, x-${version}" + tail + "${version} is not known");
+        // a value holds the reference as written, here ${.version}, which Maven reads as version and gives x-1 for
+        failures.put(project("t:bom:1", properties("version=x-${.version}"), managed(dep("g:a:${.version}"))),
+                "t:bom:1: ${.version} reads the property version, x-${.version}" + tail + "${.version} is not known");
         failures.put(project("t:bom:1", managed(bomImport("t:imp:5"))),
                 "t:imp:5: ${version} reads the property version, ${version}.Final" + tail + "${version} is not known");
         failures.put(project("t:bom:5", properties("version=${version}.0"), managed(bomImport("t:imp:${version}"))),
